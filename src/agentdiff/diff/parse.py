@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field
+from enum import Enum
 
 import pydantic
 
@@ -23,6 +24,12 @@ _NEW_MODE_RE = re.compile(r"^new mode (\d+)$")
 _RENAME_FROM_RE = re.compile(r"^(?:rename|copy) from (.+)$")
 _RENAME_TO_RE = re.compile(r"^(?:rename|copy) to (.+)$")
 _IGNORED_HEADER_RE = re.compile(r"^(?:index|similarity index|dissimilarity index) ")
+
+
+class _ParseState(Enum):
+    SEEK = "SEEK"
+    IN_FILE = "IN_FILE"
+    HUNK = "HUNK"
 
 
 class DiffParseError(ValueError):
@@ -109,209 +116,229 @@ def _close_file(cur: _FileBuilder, lineno: int) -> FileDiff:
         raise DiffParseError(f"invalid model: {exc}", lineno) from exc
 
 
-def parse_unified_diff(text: str) -> Change:
-    """Parse a full unified-diff changeset into a Change. Pure, I/O-free. (R1, R6)"""
-    lines = text.replace("\r\n", "\n").splitlines()
-    files: list[FileDiff] = []
+@dataclass
+class _Parser:
+    """Line-by-line state machine over a diff text.
+
+    state cycles SEEK -> IN_FILE -> HUNK as diff headers, file headers and
+    hunk bodies are consumed; each handler reads exactly one line.
+    """
+
+    text: str
+    files: list[FileDiff] = field(default_factory=list)
     cur: _FileBuilder | None = None
     hunk: _HunkBuilder | None = None
-    old_no = 0
-    new_no = 0
-    old_left = 0
-    new_left = 0
-    prev_was_content = False
-    state = "SEEK"
+    old_no: int = 0
+    new_no: int = 0
+    old_left: int = 0
+    new_left: int = 0
+    prev_was_content: bool = False
+    state: _ParseState = _ParseState.SEEK
 
-    def close_hunk() -> None:
-        nonlocal hunk, old_left, new_left, state
-        assert cur is not None
-        assert hunk is not None
-        cur.hunks.append(_close_hunk(hunk, lineno))
-        hunk = None
-        old_left = 0
-        new_left = 0
-        state = "IN_FILE"
+    def _close_hunk(self, lineno: int) -> None:
+        assert self.cur is not None
+        assert self.hunk is not None
+        self.cur.hunks.append(_close_hunk(self.hunk, lineno))
+        self.hunk = None
+        self.old_left = 0
+        self.new_left = 0
+        self.state = _ParseState.IN_FILE
 
-    for lineno, line in enumerate(lines):
-        if state == "SEEK":
-            if not line.strip():
-                continue
-            if _DIFF_GIT_RE.match(line) is not None:
-                parts = line.split()[2:]
-                old_fb = parts[0] if parts else None
-                new_fb = parts[1] if len(parts) > 1 else None
-                cur = _FileBuilder(
-                    path=_normalize_path(new_fb) if new_fb is not None else None,
-                    old_path=_normalize_path(old_fb) if old_fb is not None else None,
-                )
-                state = "IN_FILE"
-                continue
-            if _COMBINED_RE.match(line) is not None:
-                raise DiffParseError("combined diffs are out of scope", lineno)
-            old_m = _OLD_PATH_RE.match(line)
-            if old_m is not None:
-                cur = _FileBuilder(old_path=_normalize_path(old_m.group(1)))
-                state = "IN_FILE"
-                continue
-            if _GIT_BINARY_RE.match(line) is not None:
+    def _seek(self, line: str, lineno: int) -> None:
+        # Outside any file section: skip blanks until the next diff header.
+        if not line.strip():
+            return
+        if _DIFF_GIT_RE.match(line) is not None:
+            parts = line.split()[2:]
+            old_fb = parts[0] if parts else None
+            new_fb = parts[1] if len(parts) > 1 else None
+            self.cur = _FileBuilder(
+                path=_normalize_path(new_fb) if new_fb is not None else None,
+                old_path=_normalize_path(old_fb) if old_fb is not None else None,
+            )
+            self.state = _ParseState.IN_FILE
+            return
+        if _COMBINED_RE.match(line) is not None:
+            raise DiffParseError("combined diffs are out of scope", lineno)
+        old_m = _OLD_PATH_RE.match(line)
+        if old_m is not None:
+            self.cur = _FileBuilder(old_path=_normalize_path(old_m.group(1)))
+            self.state = _ParseState.IN_FILE
+            return
+        if _GIT_BINARY_RE.match(line) is not None:
+            raise DiffParseError("GIT binary patch payloads are out of scope", lineno)
+        if line.startswith("@@"):
+            raise DiffParseError("hunk header outside a file section", lineno)
+
+    def _in_file(self, line: str, lineno: int) -> None:
+        old_m = _OLD_PATH_RE.match(line)
+        if old_m is not None:
+            # A `---` header closes the previous file once it has hunks.
+            if self.cur is not None and self.cur.hunks:
+                self.files.append(_close_file(self.cur, lineno))
+                self.cur = _FileBuilder(old_path=_normalize_path(old_m.group(1)))
+            else:
+                assert self.cur is not None
+                self.cur.old_path = _normalize_path(old_m.group(1))
+            self.prev_was_content = False
+            return
+        new_m = _NEW_PATH_RE.match(line)
+        if new_m is not None:
+            assert self.cur is not None
+            path = _normalize_path(new_m.group(1))
+            if path is not None:
+                self.cur.path = path
+            self.prev_was_content = False
+            return
+        assert self.cur is not None
+        if _NO_NEWLINE_RE.match(line) is not None:
+            if not self.prev_was_content:
+                raise DiffParseError("no-newline marker outside a hunk body", lineno)
+            self.prev_was_content = False
+            return
+        self.prev_was_content = False
+        new_file_m = _NEW_FILE_MODE_RE.match(line)
+        if new_file_m is not None:
+            self.cur.new_mode = new_file_m.group(1)
+            return
+        deleted_file_m = _DELETED_FILE_MODE_RE.match(line)
+        if deleted_file_m is not None:
+            self.cur.old_mode = deleted_file_m.group(1)
+            return
+        old_mode_m = _OLD_MODE_RE.match(line)
+        if old_mode_m is not None:
+            self.cur.old_mode = old_mode_m.group(1)
+            return
+        new_mode_m = _NEW_MODE_RE.match(line)
+        if new_mode_m is not None:
+            self.cur.new_mode = new_mode_m.group(1)
+            return
+        rename_m = _RENAME_FROM_RE.match(line)
+        if rename_m is not None:
+            self.cur.old_path = rename_m.group(1)
+            return
+        rename_to_m = _RENAME_TO_RE.match(line)
+        if rename_to_m is not None:
+            self.cur.path = rename_to_m.group(1)
+            return
+        if _IGNORED_HEADER_RE.match(line) is not None:
+            return
+        if _BINARY_RE.match(line) is not None:
+            self.cur.is_binary = True
+            self.files.append(_close_file(self.cur, lineno))
+            self.cur = None
+            self.state = _ParseState.SEEK
+            return
+        if _GIT_BINARY_RE.match(line) is not None:
+            raise DiffParseError("GIT binary patch payloads are out of scope", lineno)
+        if _DIFF_GIT_RE.match(line) is not None:
+            self.files.append(_close_file(self.cur, lineno))
+            parts = line.split()[2:]
+            old_fb = parts[0] if parts else None
+            new_fb = parts[1] if len(parts) > 1 else None
+            self.cur = _FileBuilder(
+                path=_normalize_path(new_fb) if new_fb is not None else None,
+                old_path=_normalize_path(old_fb) if old_fb is not None else None,
+            )
+            return
+        if _COMBINED_RE.match(line) is not None:
+            raise DiffParseError("combined diffs are out of scope", lineno)
+        if line.startswith("@@"):
+            hunk_m = _HUNK_RE.match(line)
+            if hunk_m is None:
+                raise DiffParseError("malformed hunk header", lineno)
+            old_start = int(hunk_m.group(1))
+            old_count = int(hunk_m.group(2) or "1")
+            new_start = int(hunk_m.group(3))
+            new_count = int(hunk_m.group(4) or "1")
+            if self.cur.path is None:
+                raise DiffParseError("hunk header without a new path", lineno)
+            self.hunk = _HunkBuilder(old_start, old_count, new_start, new_count)
+            self.old_no = old_start
+            self.new_no = new_start
+            self.old_left = old_count
+            self.new_left = new_count
+            self.state = _ParseState.HUNK
+            return
+        raise DiffParseError(f"unexpected line in file section: {line!r}", lineno)
+
+    def _hunk(self, line: str, lineno: int) -> None:
+        if _NO_NEWLINE_RE.match(line) is not None:
+            assert self.hunk is not None
+            if not self.hunk.lines:
                 raise DiffParseError(
-                    "GIT binary patch payloads are out of scope", lineno
+                    "no-newline marker must follow a content line", lineno
                 )
-            if line.startswith("@@"):
-                raise DiffParseError("hunk header outside a file section", lineno)
-            continue
+            return
+        if line.startswith(" "):
+            assert self.hunk is not None
+            if self.old_left <= 0 or self.new_left <= 0:
+                raise DiffParseError("context line exceeds hunk counts", lineno)
+            self.hunk.lines.append(
+                Line(
+                    kind="ctx",
+                    old_no=self.old_no,
+                    new_no=self.new_no,
+                    text=line[1:],
+                )
+            )
+            self.prev_was_content = True
+            self.old_left -= 1
+            self.new_left -= 1
+            self.old_no += 1
+            self.new_no += 1
+            if self.old_left == 0 and self.new_left == 0:
+                self._close_hunk(lineno)
+            return
+        if line.startswith("-"):
+            assert self.hunk is not None
+            if self.old_left <= 0:
+                raise DiffParseError("deleted line exceeds old count", lineno)
+            self.hunk.lines.append(
+                Line(kind="del", old_no=self.old_no, new_no=None, text=line[1:])
+            )
+            self.prev_was_content = True
+            self.old_left -= 1
+            self.old_no += 1
+            if self.old_left == 0 and self.new_left == 0:
+                self._close_hunk(lineno)
+            return
+        if line.startswith("+"):
+            assert self.hunk is not None
+            if self.new_left <= 0:
+                raise DiffParseError("added line exceeds new count", lineno)
+            self.hunk.lines.append(
+                Line(kind="add", old_no=None, new_no=self.new_no, text=line[1:])
+            )
+            self.prev_was_content = True
+            self.new_left -= 1
+            self.new_no += 1
+            if self.old_left == 0 and self.new_left == 0:
+                self._close_hunk(lineno)
+            return
+        raise DiffParseError("unexpected line in hunk body", lineno)
 
-        if state == "IN_FILE":
-            old_m = _OLD_PATH_RE.match(line)
-            if old_m is not None:
-                if cur is not None and cur.hunks:
-                    files.append(_close_file(cur, lineno))
-                    cur = _FileBuilder(old_path=_normalize_path(old_m.group(1)))
-                else:
-                    assert cur is not None
-                    cur.old_path = _normalize_path(old_m.group(1))
-                prev_was_content = False
-                continue
-            new_m = _NEW_PATH_RE.match(line)
-            if new_m is not None:
-                assert cur is not None
-                path = _normalize_path(new_m.group(1))
-                if path is not None:
-                    cur.path = path
-                prev_was_content = False
-                continue
-            assert cur is not None
-            if _NO_NEWLINE_RE.match(line) is not None:
-                if not prev_was_content:
-                    raise DiffParseError(
-                        "no-newline marker outside a hunk body", lineno
-                    )
-                prev_was_content = False
-                continue
-            prev_was_content = False
-            new_file_m = _NEW_FILE_MODE_RE.match(line)
-            if new_file_m is not None:
-                cur.new_mode = new_file_m.group(1)
-                continue
-            deleted_file_m = _DELETED_FILE_MODE_RE.match(line)
-            if deleted_file_m is not None:
-                cur.old_mode = deleted_file_m.group(1)
-                continue
-            old_mode_m = _OLD_MODE_RE.match(line)
-            if old_mode_m is not None:
-                cur.old_mode = old_mode_m.group(1)
-                continue
-            new_mode_m = _NEW_MODE_RE.match(line)
-            if new_mode_m is not None:
-                cur.new_mode = new_mode_m.group(1)
-                continue
-            rename_m = _RENAME_FROM_RE.match(line)
-            if rename_m is not None:
-                cur.old_path = rename_m.group(1)
-                continue
-            rename_to_m = _RENAME_TO_RE.match(line)
-            if rename_to_m is not None:
-                cur.path = rename_to_m.group(1)
-                continue
-            if _IGNORED_HEADER_RE.match(line) is not None:
-                continue
-            if _BINARY_RE.match(line) is not None:
-                cur.is_binary = True
-                files.append(_close_file(cur, lineno))
-                cur = None
-                state = "SEEK"
-                continue
-            if _GIT_BINARY_RE.match(line) is not None:
-                raise DiffParseError(
-                    "GIT binary patch payloads are out of scope", lineno
-                )
-            if _DIFF_GIT_RE.match(line) is not None:
-                files.append(_close_file(cur, lineno))
-                parts = line.split()[2:]
-                old_fb = parts[0] if parts else None
-                new_fb = parts[1] if len(parts) > 1 else None
-                cur = _FileBuilder(
-                    path=_normalize_path(new_fb) if new_fb is not None else None,
-                    old_path=_normalize_path(old_fb) if old_fb is not None else None,
-                )
-                continue
-            if _COMBINED_RE.match(line) is not None:
-                raise DiffParseError("combined diffs are out of scope", lineno)
-            if line.startswith("@@"):
-                hunk_m = _HUNK_RE.match(line)
-                if hunk_m is None:
-                    raise DiffParseError("malformed hunk header", lineno)
-                old_start = int(hunk_m.group(1))
-                old_count = int(hunk_m.group(2) or "1")
-                new_start = int(hunk_m.group(3))
-                new_count = int(hunk_m.group(4) or "1")
-                if cur.path is None:
-                    raise DiffParseError("hunk header without a new path", lineno)
-                hunk = _HunkBuilder(old_start, old_count, new_start, new_count)
-                old_no = old_start
-                new_no = new_start
-                old_left = old_count
-                new_left = new_count
-                state = "HUNK"
-                continue
-            raise DiffParseError(f"unexpected line in file section: {line!r}", lineno)
+    def parse(self) -> Change:
+        lines = self.text.replace("\r\n", "\n").splitlines()
+        for lineno, line in enumerate(lines):
+            if self.state is _ParseState.SEEK:
+                self._seek(line, lineno)
+            elif self.state is _ParseState.IN_FILE:
+                self._in_file(line, lineno)
+            else:
+                self._hunk(line, lineno)
+        if self.state is _ParseState.HUNK:
+            raise DiffParseError(
+                "truncated hunk: header counts not satisfied", len(lines)
+            )
+        if self.state is _ParseState.IN_FILE:
+            assert self.cur is not None
+            self.files.append(_close_file(self.cur, len(lines)))
+        if not self.files:
+            raise DiffParseError("no diff file headers", 0)
+        return Change(id=_derive_id(self.text), files=self.files)
 
-        if state == "HUNK":
-            if _NO_NEWLINE_RE.match(line) is not None:
-                assert hunk is not None
-                if not hunk.lines:
-                    raise DiffParseError(
-                        "no-newline marker must follow a content line", lineno
-                    )
-                continue
-            if line.startswith(" "):
-                assert hunk is not None
-                if old_left <= 0 or new_left <= 0:
-                    raise DiffParseError("context line exceeds hunk counts", lineno)
-                hunk.lines.append(
-                    Line(kind="ctx", old_no=old_no, new_no=new_no, text=line[1:])
-                )
-                prev_was_content = True
-                old_left -= 1
-                new_left -= 1
-                old_no += 1
-                new_no += 1
-                if old_left == 0 and new_left == 0:
-                    close_hunk()
-                continue
-            if line.startswith("-"):
-                assert hunk is not None
-                if old_left <= 0:
-                    raise DiffParseError("deleted line exceeds old count", lineno)
-                hunk.lines.append(
-                    Line(kind="del", old_no=old_no, new_no=None, text=line[1:])
-                )
-                prev_was_content = True
-                old_left -= 1
-                old_no += 1
-                if old_left == 0 and new_left == 0:
-                    close_hunk()
-                continue
-            if line.startswith("+"):
-                assert hunk is not None
-                if new_left <= 0:
-                    raise DiffParseError("added line exceeds new count", lineno)
-                hunk.lines.append(
-                    Line(kind="add", old_no=None, new_no=new_no, text=line[1:])
-                )
-                prev_was_content = True
-                new_left -= 1
-                new_no += 1
-                if old_left == 0 and new_left == 0:
-                    close_hunk()
-                continue
-            raise DiffParseError("unexpected line in hunk body", lineno)
 
-    if state == "HUNK":
-        raise DiffParseError("truncated hunk: header counts not satisfied", len(lines))
-    if state == "IN_FILE":
-        assert cur is not None
-        files.append(_close_file(cur, len(lines)))
-    if not files:
-        raise DiffParseError("no diff file headers", 0)
-    return Change(id=_derive_id(text), files=files)
+def parse_unified_diff(text: str) -> Change:
+    """Parse a full unified-diff changeset into a Change. Pure, I/O-free. (R1, R6)"""
+    return _Parser(text).parse()

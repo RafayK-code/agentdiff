@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from enum import Enum
 from typing import Literal
@@ -10,6 +11,45 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 class Side(str, Enum):
     OLD = "OLD"
     NEW = "NEW"
+
+
+class CommentState(str, Enum):
+    ACTIVE = "ACTIVE"
+    RESOLVED = "RESOLVED"
+    DRIFTED = "DRIFTED"
+
+
+class LineRange(BaseModel):
+    side: Side = Field(strict=True)
+    start: int
+    end: int
+
+    @model_validator(mode="after")
+    def _valid_span(self) -> LineRange:
+        if self.start < 1:
+            raise ValueError(f"start must be >= 1, got {self.start}")
+        if self.end < self.start:
+            raise ValueError(f"end {self.end} < start {self.start}")
+        return self
+
+
+class Comment(BaseModel):
+    id: str
+    change_id: str
+    file: str
+    range: LineRange | None = None
+    text: str
+    author: str
+    thread_id: str | None = None
+    state: CommentState = Field(strict=True)
+    created_at: datetime
+    updated_at: datetime
+    anchor_snapshot: list[str] = Field(default_factory=list)
+
+
+def new_comment_id() -> str:
+    """Opaque, unique, non-deterministic comment id (uuid-based). (R5)"""
+    return f"c-{uuid.uuid4().hex}"
 
 
 class Line(BaseModel):
@@ -27,15 +67,15 @@ class Line(BaseModel):
 
     @model_validator(mode="after")
     def _check_numbering(self) -> Line:
-        if self.kind == "add":
-            if self.old_no is not None or self.new_no is None:
-                raise ValueError(f"add line must have new_no only: {self!r}")
-        elif self.kind == "del":
-            if self.old_no is None or self.new_no is not None:
-                raise ValueError(f"del line must have old_no only: {self!r}")
-        else:
-            if self.old_no is None or self.new_no is None:
-                raise ValueError(f"ctx line must have both numbers: {self!r}")
+        expected = {
+            "add": (False, True),
+            "del": (True, False),
+            "ctx": (True, True),
+        }
+        has_old = self.old_no is not None
+        has_new = self.new_no is not None
+        if (has_old, has_new) != expected[self.kind]:
+            raise ValueError(f"{self.kind} line has invalid numbering: {self!r}")
         return self
 
 
