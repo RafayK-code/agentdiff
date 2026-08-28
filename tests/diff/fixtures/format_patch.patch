@@ -1,0 +1,15 @@
+From abcdef Mon Sep 17 00:00:00 2001
+From: Dev <dev@example.com>
+Subject: [PATCH] fix
+
+---
+ src/x.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/x.py b/src/x.py
+index 1234567..89abcde 100644
+--- a/src/x.py
++++ b/src/x.py
+@@ -1 +1 @@
+-y
++y2
