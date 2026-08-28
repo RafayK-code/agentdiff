@@ -1,0 +1,10 @@
+# agentdiff store (Decision D3 — comments never committed)
+.agentdiff/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
