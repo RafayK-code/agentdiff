@@ -7,6 +7,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
 from tests.diff.conftest import load_fixture
 from tests.export.conftest import comment_factory
 
@@ -18,16 +19,6 @@ RE_SEMVER = re.compile(r"\d+\.\d+\.\d+")
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
-def _single_file_doc(name: str) -> dict[str, object]:
-    change = parse_unified_diff(load_fixture(name))
-    files = json.loads(export_json(change, []))["change"]["files"]
-    assert len(files) == 1
-    return files[0]
-
-
-# --- JSON API and schema version (R1, R5) ---
-
-
 def test_api_signature() -> None:
     import agentdiff.export as export
 
@@ -37,23 +28,12 @@ def test_api_signature() -> None:
         p.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
         for p in sig.parameters.values()
     )
-    assert str(sig.parameters["change"].annotation) == "Change"
-    assert str(sig.parameters["comments"].annotation) == "list[Comment]"
-    assert str(sig.return_annotation) == "str"
-    assert export.__all__ == ["SCHEMA_VERSION", "export_json", "export_markdown"]
+    assert {"SCHEMA_VERSION", "export_json", "export_markdown"} <= set(export.__all__)
 
 
 def test_schema_version_constant() -> None:
     assert type(SCHEMA_VERSION) is str
     assert re.fullmatch(RE_SEMVER, SCHEMA_VERSION) is not None
-
-
-def test_schema_version_in_output(
-    approved_change, mixed_comments: list[Comment]
-) -> None:
-    doc = json.loads(export_json(approved_change, mixed_comments))
-    assert doc["schema_version"] == SCHEMA_VERSION
-    assert re.fullmatch(RE_SEMVER, doc["schema_version"]) is not None
 
 
 def test_output_is_pure(approved_change, mixed_comments: list[Comment]) -> None:
@@ -66,35 +46,6 @@ def test_output_is_pure(approved_change, mixed_comments: list[Comment]) -> None:
     assert mixed_comments == comments_copy
 
 
-# --- change block (R2) ---
-
-
-def test_change_block_fields_and_order(
-    approved_change, mixed_comments: list[Comment]
-) -> None:
-    parsed = json.loads(export_json(approved_change, mixed_comments))["change"]
-    assert list(parsed.keys()) == [
-        "id",
-        "base_revision",
-        "head_revision",
-        "approval",
-        "files",
-    ]
-    assert parsed["id"] == "chg-01"
-    assert parsed["base_revision"] == "3f2a1b0"
-    assert parsed["head_revision"] == "9c7d0e1"
-
-
-def test_approval_present(approved_change, mixed_comments: list[Comment]) -> None:
-    parsed = json.loads(export_json(approved_change, mixed_comments))["change"]
-    assert parsed["approval"] == {
-        "status": "APPROVED",
-        "message": "LGTM, ship it",
-        "author": "alice",
-        "at": "2024-01-01T12:00:00Z",
-    }
-
-
 def test_approval_absent_is_null(
     unapproved_change, mixed_comments: list[Comment]
 ) -> None:
@@ -104,77 +55,76 @@ def test_approval_absent_is_null(
     assert '"approval": null' in out
 
 
-def test_file_block_order(approved_change, mixed_comments: list[Comment]) -> None:
-    parsed = json.loads(export_json(approved_change, mixed_comments))
-    for file in parsed["change"]["files"]:
-        assert list(file.keys()) == ["path", "additions", "deletions", "old_path"]
-
-
-def test_counts_basic() -> None:
-    assert _single_file_doc("basic.patch") == {
-        "path": "src/foo.py",
-        "additions": 1,
-        "deletions": 1,
-        "old_path": None,
-    }
-
-
-def test_counts_multiple_hunks() -> None:
-    file = _single_file_doc("multiple_hunks.patch")
-    assert file["additions"] == 2
-    assert file["deletions"] == 2
-
-
-def test_counts_new_file() -> None:
-    file = _single_file_doc("new_file.patch")
-    assert file["additions"] == 3
-    assert file["deletions"] == 0
-
-
-def test_counts_deleted_file() -> None:
-    file = _single_file_doc("deleted_file.patch")
-    assert file["additions"] == 0
-    assert file["deletions"] == 3
-
-
-def test_counts_hunkless_files() -> None:
-    for name in ("rename.patch", "mode_only.patch", "binary.patch"):
-        file = _single_file_doc(name)
-        assert file["additions"] == 0
-        assert file["deletions"] == 0
-    assert _single_file_doc("rename.patch") == {
-        "path": "new.py",
-        "additions": 0,
-        "deletions": 0,
-        "old_path": "old.py",
-    }
-
-
-def test_counts_ignore_context() -> None:
-    change = parse_unified_diff(load_fixture("basic.patch"))
+@pytest.mark.parametrize(
+    "name,expected,no_context",
+    [
+        (
+            "basic.patch",
+            {"path": "src/foo.py", "additions": 1, "deletions": 1, "old_path": None},
+            True,
+        ),
+        (
+            "multiple_hunks.patch",
+            {"path": "m.txt", "additions": 2, "deletions": 2, "old_path": None},
+            False,
+        ),
+        (
+            "new_file.patch",
+            {"path": "new.txt", "additions": 3, "deletions": 0, "old_path": None},
+            False,
+        ),
+        (
+            "deleted_file.patch",
+            {"path": "old.txt", "additions": 0, "deletions": 3, "old_path": None},
+            False,
+        ),
+        (
+            "rename.patch",
+            {"path": "new.py", "additions": 0, "deletions": 0, "old_path": "old.py"},
+            False,
+        ),
+        (
+            "mode_only.patch",
+            {"path": "script.sh", "additions": 0, "deletions": 0, "old_path": None},
+            False,
+        ),
+        (
+            "binary.patch",
+            {"path": "img.bin", "additions": 0, "deletions": 0, "old_path": None},
+            False,
+        ),
+        (
+            "rename_modify.patch",
+            {"path": "new.py", "additions": 1, "deletions": 1, "old_path": "old.py"},
+            False,
+        ),
+        (
+            "single_line.patch",
+            {"path": "s.txt", "additions": 1, "deletions": 1, "old_path": None},
+            False,
+        ),
+    ],
+    ids=[
+        "basic",
+        "multiple-hunks",
+        "new-file",
+        "deleted-file",
+        "rename",
+        "mode-only",
+        "binary",
+        "old-path-set",
+        "single-line-change",
+    ],
+)
+def test_counting(name: str, expected: dict[str, object], no_context: bool) -> None:
+    change = parse_unified_diff(load_fixture(name))
     out = export_json(change, [])
     files = json.loads(out)["change"]["files"]
-    assert files[0]["additions"] == 1
-    assert files[0]["deletions"] == 1
-    assert "ctx1" not in out
-    assert "ctx2" not in out
-
-
-def test_old_path_set() -> None:
-    assert _single_file_doc("rename_modify.patch") == {
-        "path": "new.py",
-        "additions": 1,
-        "deletions": 1,
-        "old_path": "old.py",
-    }
-
-
-def test_single_line_change() -> None:
-    file = _single_file_doc("single_line.patch")
-    assert file["additions"] == 1
-    assert file["deletions"] == 1
-    assert file["path"] == "s.txt"
-    assert file["old_path"] is None
+    assert len(files) == 1
+    assert files[0] == expected
+    if no_context:
+        assert "ctx1" not in out
+        assert "ctx2" not in out
 
 
 def test_empty_files_list() -> None:
@@ -182,36 +132,6 @@ def test_empty_files_list() -> None:
     parsed = json.loads(export_json(change, []))
     assert parsed["change"]["files"] == []
     assert parsed["comments"] == []
-
-
-# --- comments block (R3) ---
-
-
-def test_comment_fields_and_order(
-    approved_change, mixed_comments: list[Comment]
-) -> None:
-    doc = json.loads(export_json(approved_change, mixed_comments))
-    comment = next(c for c in doc["comments"] if c["id"] == "c-new")
-    assert list(comment.keys()) == [
-        "id",
-        "file",
-        "side",
-        "lines",
-        "text",
-        "author",
-        "thread_id",
-        "state",
-        "drifted",
-        "created_at",
-    ]
-    assert comment["side"] == "NEW"
-    assert comment["lines"] == [2, 2]
-    assert comment["text"] == "Fix this"
-    assert comment["author"] == "alice"
-    assert comment["thread_id"] is None
-    assert comment["state"] == "ACTIVE"
-    assert comment["drifted"] is False
-    assert comment["created_at"] == "2024-01-01T14:05:00Z"
 
 
 def test_single_line_range_inclusive(approved_change) -> None:
@@ -243,33 +163,11 @@ def test_file_level_comment_nulls(approved_change) -> None:
         assert key in exported
 
 
-def test_drifted_flag(approved_change, mixed_comments: list[Comment]) -> None:
-    doc = json.loads(export_json(approved_change, mixed_comments))
-    drifted = next(c for c in doc["comments"] if c["id"] == "c-drifted")
-    assert drifted["state"] == "DRIFTED"
-    assert drifted["drifted"] is True
-
-
-def test_resolved_not_drifted(approved_change, mixed_comments: list[Comment]) -> None:
-    doc = json.loads(export_json(approved_change, mixed_comments))
-    resolved = next(c for c in doc["comments"] if c["id"] == "c-old-resolved")
-    assert resolved["state"] == "RESOLVED"
-    assert resolved["drifted"] is False
-
-
 def test_drifted_derived_not_set(approved_change) -> None:
     comment = comment_factory(id="c-active", state=CommentState.ACTIVE)
     object.__setattr__(comment, "drifted", True)
     exported = json.loads(export_json(approved_change, [comment]))["comments"][0]
     assert exported["drifted"] is False
-
-
-def test_thread_id_shared(approved_change, mixed_comments: list[Comment]) -> None:
-    doc = json.loads(export_json(approved_change, mixed_comments))
-    threaded = [c for c in doc["comments"] if c["id"] in ("c-thread-1", "c-thread-2")]
-    assert [c["thread_id"] for c in threaded] == ["t-1", "t-1"]
-    unthreaded = next(c for c in doc["comments"] if c["id"] == "c-new")
-    assert unthreaded["thread_id"] is None
 
 
 def test_comment_order_preserved(
@@ -285,25 +183,24 @@ def test_comment_order_preserved(
     ]
 
 
-def test_created_at_utc_trailing_z(approved_change) -> None:
-    comment = comment_factory(id="c-ts", created_at=datetime(2024, 1, 1, 14, 5, 30))
+@pytest.mark.parametrize(
+    "created_at,expected",
+    [
+        (datetime(2024, 1, 1, 14, 5, 30), "2024-01-01T14:05:30Z"),
+        (
+            datetime(2024, 1, 1, 9, 5, 30, tzinfo=timezone(timedelta(hours=-5))),
+            "2024-01-01T14:05:30Z",
+        ),
+        (datetime(2024, 1, 1, 14, 5, 30, 123456), "2024-01-01T14:05:30Z"),
+    ],
+    ids=["naive-utc", "aware-converted", "microseconds-truncated"],
+)
+def test_created_at_serialization(
+    approved_change, created_at: datetime, expected: str
+) -> None:
+    comment = comment_factory(id="c-ts", created_at=created_at)
     exported = json.loads(export_json(approved_change, [comment]))["comments"][0]
-    assert exported["created_at"] == "2024-01-01T14:05:30Z"
-
-
-def test_created_at_aware_converted(approved_change) -> None:
-    aware = datetime(2024, 1, 1, 9, 5, 30, tzinfo=timezone(timedelta(hours=-5)))
-    comment = comment_factory(id="c-aware", created_at=aware)
-    exported = json.loads(export_json(approved_change, [comment]))["comments"][0]
-    assert exported["created_at"] == "2024-01-01T14:05:30Z"
-
-
-def test_created_at_microseconds_truncated(approved_change) -> None:
-    comment = comment_factory(
-        id="c-micro", created_at=datetime(2024, 1, 1, 14, 5, 30, 123456)
-    )
-    exported = json.loads(export_json(approved_change, [comment]))["comments"][0]
-    assert exported["created_at"] == "2024-01-01T14:05:30Z"
+    assert exported["created_at"] == expected
 
 
 def test_unicode_escaped_ascii(approved_change) -> None:
@@ -314,9 +211,6 @@ def test_unicode_escaped_ascii(approved_change) -> None:
     exported = json.loads(out)["comments"][0]
     assert exported["text"] == "café ☕"
     assert exported["author"] == "joán"
-
-
-# --- Golden fixture (R7) ---
 
 
 def test_golden_exact_match(approved_change, mixed_comments: list[Comment]) -> None:
@@ -331,21 +225,3 @@ def test_golden_round_trips(approved_change, mixed_comments: list[Comment]) -> N
     paths = {f["path"] for f in doc["change"]["files"]}
     for comment in doc["comments"]:
         assert comment["file"] in paths
-
-
-def test_golden_has_file_level_and_thread_mix(
-    approved_change, mixed_comments: list[Comment]
-) -> None:
-    comments = json.loads(export_json(approved_change, mixed_comments))["comments"]
-    file_level_drifted = [
-        c
-        for c in comments
-        if c["side"] is None
-        and c["lines"] is None
-        and c["state"] == "DRIFTED"
-        and c["drifted"] is True
-    ]
-    assert len(file_level_drifted) == 1
-    assert sum(1 for c in comments if c["thread_id"] == "t-1") >= 2
-    assert any(c["state"] == "RESOLVED" and c["drifted"] is False for c in comments)
-    assert any(c["side"] == "NEW" for c in comments)

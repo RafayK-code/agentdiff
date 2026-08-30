@@ -23,7 +23,7 @@ def _write_lines(path: Path, lines: list[str]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def test_r8_integration_hunks(tmp_path: Path) -> None:
+def test_real_git_repo_diff_hunks(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
 
@@ -71,7 +71,7 @@ def test_r8_integration_hunks(tmp_path: Path) -> None:
     assert all(line.kind == "add" for line in nf_hunk.lines)
 
 
-def test_r8_integration_worktree(tmp_path: Path) -> None:
+def test_real_git_repo_worktree_diff(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
 

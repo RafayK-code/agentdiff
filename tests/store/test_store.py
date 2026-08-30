@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import re
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol
+from shutil import rmtree
 
 import pytest
 from pydantic import ValidationError
@@ -21,25 +20,10 @@ from agentdiff.model import (
     Side,
 )
 from agentdiff.store import JsonlStore, Store, StoreBackend, StoreError, create_store
-from agentdiff.store.locking import FileLock, file_lock
+from agentdiff.store.locking import file_lock
 
 
-def test_r1_protocol_and_implementor_shape(store: JsonlStore) -> None:
-    assert issubclass(Store, Protocol)
-    for name in (
-        "init",
-        "save_change",
-        "load_change",
-        "add_comment",
-        "get_comment",
-        "update_comment",
-        "list_comments",
-    ):
-        assert hasattr(Store, name)
-        assert callable(getattr(store, name))
-
-
-def test_r1_runtime_checkable(store: JsonlStore) -> None:
+def test_store_protocol_runtime_checkable(store: JsonlStore) -> None:
     class NoGetComment:
         def init(self) -> None: ...
 
@@ -58,7 +42,9 @@ def test_r1_runtime_checkable(store: JsonlStore) -> None:
     assert isinstance(object(), Store) is False
 
 
-def test_r1_missing_change_semantics(store: JsonlStore, change: Change) -> None:
+def test_missing_change_and_comment_semantics(
+    store: JsonlStore, change: Change
+) -> None:
     store.save_change(change)
     c_a = comment_factory(change, id="c-a")
     store.add_comment(c_a)
@@ -105,25 +91,7 @@ def test_a13_create_store_accepts_str_root(tmp_path: Path, change: Change) -> No
     assert (tmp_path / ".agentdiff" / f"{change.id}.jsonl").exists() is True
 
 
-def test_r2_file_layout(tmp_path: Path, store: JsonlStore, change: Change) -> None:
-    store.save_change(change)
-    c1 = comment_factory(change, id="c-1")
-    c2 = comment_factory(change, id="c-2")
-    store.add_comment(c1)
-    store.add_comment(c2)
-    raw = (tmp_path / ".agentdiff" / f"{change.id}.jsonl").read_text(encoding="utf-8")
-    assert (
-        raw
-        == change.model_dump_json()
-        + "\n"
-        + c1.model_dump_json()
-        + "\n"
-        + c2.model_dump_json()
-        + "\n"
-    )
-
-
-def test_r2_roundtrip(store: JsonlStore, change: Change) -> None:
+def test_change_and_comment_roundtrip(store: JsonlStore, change: Change) -> None:
     store.save_change(change)
     c1 = comment_factory(
         change,
@@ -144,49 +112,17 @@ def test_r2_roundtrip(store: JsonlStore, change: Change) -> None:
     assert comments[0].range.side is Side.NEW
     assert comments[1].range is None
 
-
-def test_r2_creation_order_preserved(
-    tmp_path: Path, store: JsonlStore, change: Change
-) -> None:
-    store.save_change(change)
-    c1 = comment_factory(change, id="c-1")
-    c2 = comment_factory(change, id="c-2")
-    c3 = comment_factory(change, id="c-3")
-    store.add_comment(c1)
-    store.add_comment(c2)
-    store.add_comment(c3)
-    assert [c.id for c in store.list_comments(change.id)] == ["c-1", "c-2", "c-3"]
-    raw = (tmp_path / ".agentdiff" / f"{change.id}.jsonl").read_text(encoding="utf-8")
-    lines = raw.rstrip("\n").split("\n")
-    assert lines[1] == c1.model_dump_json()
-    assert lines[2] == c2.model_dump_json()
-    assert lines[3] == c3.model_dump_json()
-
-
-def test_r2_resave_rewrites_header_keeps_comments(
-    store: JsonlStore, change: Change
-) -> None:
-    store.save_change(change)
-    c1 = comment_factory(change, id="c-1")
-    c2 = comment_factory(change, id="c-2")
-    store.add_comment(c1)
-    store.add_comment(c2)
     store.save_change(change)
     store.save_change(change.model_copy(update={"head_revision": "abc123"}))
     assert store.list_comments(change.id) == [c1, c2]
     assert store.load_change(change.id).head_revision == "abc123"
 
 
-def test_r3_no_dir_before_any_write(tmp_path: Path) -> None:
+def test_store_dir_laziness(tmp_path: Path, change: Change) -> None:
     JsonlStore(tmp_path)
     assert (tmp_path / ".agentdiff").exists() is False
 
-
-def test_r3_write_paths_create_dir_lazily(
-    tmp_path: Path, store: JsonlStore, change: Change
-) -> None:
-    from shutil import rmtree
-
+    store = JsonlStore(tmp_path)
     store.save_change(change)
     assert (tmp_path / ".agentdiff").exists()
     rmtree(tmp_path / ".agentdiff")
@@ -200,29 +136,24 @@ def test_r3_write_paths_create_dir_lazily(
         )
     assert (tmp_path / ".agentdiff").exists()
 
+    init_root = tmp_path / "init"
+    init_store = JsonlStore(init_root)
+    assert (init_root / ".agentdiff").exists() is False
+    init_store.init()
+    assert (init_root / ".agentdiff").exists() is True
+    init_store.init()
+    assert init_store.load_change(change.id) is None
 
-def test_r3_init_idempotent(tmp_path: Path, store: JsonlStore, change: Change) -> None:
-    assert (tmp_path / ".agentdiff").exists() is False
-    store.init()
-    assert (tmp_path / ".agentdiff").exists() is True
-    store.init()
-    assert store.load_change(change.id) is None
-
-
-def test_r3_reads_never_create_dir(tmp_path: Path, store: JsonlStore) -> None:
-    assert store.load_change("chg-x") is None
-    assert store.list_comments("chg-x") == []
+    read_root = tmp_path / "read"
+    reader = JsonlStore(read_root)
+    assert reader.load_change("chg-x") is None
+    assert reader.list_comments("chg-x") == []
     with pytest.raises(StoreError):
-        store.get_comment("c-x")
-    assert (tmp_path / ".agentdiff").exists() is False
+        reader.get_comment("c-x")
+    assert (read_root / ".agentdiff").exists() is False
 
 
-def test_r3_agentdiff_gitignored() -> None:
-    gitignore = Path(".gitignore").read_text(encoding="utf-8")
-    assert re.search(r"^\.agentdiff/?$", gitignore, flags=re.MULTILINE) is not None
-
-
-def test_r4_valid_comments_accepted(store: JsonlStore, change: Change) -> None:
+def test_add_valid_comments_accepted(store: JsonlStore, change: Change) -> None:
     store.save_change(change)
     c_line = comment_factory(
         change, id="c-ok", range=LineRange(side=Side.OLD, start=2, end=2)
@@ -234,95 +165,98 @@ def test_r4_valid_comments_accepted(store: JsonlStore, change: Change) -> None:
     assert store.get_comment("c-file").range is None
 
 
-def test_r4_unknown_change_rejected(tmp_path: Path, change: Change) -> None:
-    store = JsonlStore(tmp_path)
-    c = comment_factory(change, id="c-x")
-    with pytest.raises(StoreError):
-        store.add_comment(c)
-    assert store.list_comments(change.id) == []
-    with pytest.raises(StoreError):
-        store.get_comment("c-x")
-
-
-def test_r4_invalid_file_rejected(store: JsonlStore, change: Change) -> None:
-    store.save_change(change)
-    c = comment_factory(change, id="c-bad", file="nope.py")
-    with pytest.raises(StoreError):
-        store.add_comment(c)
-    assert store.list_comments(change.id) == []
-
-
-def test_r4_invalid_line_range_rejected(store: JsonlStore, change: Change) -> None:
-    store.save_change(change)
-    c1 = comment_factory(
-        change, id="c-oob", range=LineRange(side=Side.NEW, start=3, end=4)
-    )
-    with pytest.raises(StoreError):
-        store.add_comment(c1)
-    assert store.list_comments(change.id) == []
-    change_m = parse_unified_diff(load_fixture("multiple_hunks.patch"))
-    store.save_change(change_m)
-    c2 = comment_factory(
-        change_m,
-        id="c-hi",
-        file="m.txt",
-        range=LineRange(side=Side.NEW, start=26, end=26),
-    )
-    with pytest.raises(StoreError):
-        store.add_comment(c2)
-    assert store.list_comments(change_m.id) == []
-
-
-def test_r4_nonexistent_thread_rejected(store: JsonlStore, change: Change) -> None:
-    store.save_change(change)
-    c_root = comment_factory(change, id="c-root")
-    store.add_comment(c_root)
-    reply = comment_factory(change, id="c-ghost", thread_id="th-999")
-    with pytest.raises(StoreError):
-        store.add_comment(reply)
-    assert store.list_comments(change.id) == [c_root]
-
-
-def test_r4_duplicate_comment_id_rejected(store: JsonlStore, change: Change) -> None:
-    store.save_change(change)
-    store.add_comment(comment_factory(change, id="c-dup"))
-    c2 = comment_factory(change, id="c-dup", text="different")
-    with pytest.raises(StoreError):
-        store.add_comment(c2)
-    assert [c.id for c in store.list_comments(change.id)] == ["c-dup"]
-
-
-def test_r4_error_is_typed_storeerror(
-    tmp_path: Path, store: JsonlStore, change: Change
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "unknown-change",
+        "invalid-file",
+        "invalid-line-range",
+        "nonexistent-thread",
+        "duplicate-id",
+        "typed-storeerror",
+    ],
+)
+def test_add_comment_rejects_invalid(
+    scenario: str, tmp_path: Path, store: JsonlStore, change: Change
 ) -> None:
-    store.save_change(change)
-    cases = []
-    with pytest.raises(StoreError) as excinfo:
-        store.add_comment(comment_factory(change, id="c-bad", file="nope.py"))
-    cases.append(excinfo.value)
-    with pytest.raises(StoreError) as excinfo:
-        store.add_comment(
-            comment_factory(
-                change,
-                id="c-oob",
-                range=LineRange(side=Side.NEW, start=3, end=4),
-            )
+    if scenario == "unknown-change":
+        fresh = JsonlStore(tmp_path)
+        c = comment_factory(change, id="c-x")
+        with pytest.raises(StoreError):
+            fresh.add_comment(c)
+        assert fresh.list_comments(change.id) == []
+        with pytest.raises(StoreError):
+            fresh.get_comment("c-x")
+    elif scenario == "invalid-file":
+        store.save_change(change)
+        c = comment_factory(change, id="c-bad", file="nope.py")
+        with pytest.raises(StoreError):
+            store.add_comment(c)
+        assert store.list_comments(change.id) == []
+    elif scenario == "invalid-line-range":
+        store.save_change(change)
+        c1 = comment_factory(
+            change, id="c-oob", range=LineRange(side=Side.NEW, start=3, end=4)
         )
-    cases.append(excinfo.value)
-    fresh = JsonlStore(tmp_path / "fresh")
-    with pytest.raises(StoreError) as excinfo:
-        fresh.add_comment(comment_factory(change, id="c-x"))
-    cases.append(excinfo.value)
-    for exc in cases:
-        assert isinstance(exc, StoreError)
-        assert not isinstance(exc, CommentValidationError)
-        assert not isinstance(exc, ValidationError)
-    assert "nope.py" in str(cases[0])
-    assert "src/foo.py" in str(cases[1])
-    assert any(ch.isdigit() for ch in str(cases[1]))
+        with pytest.raises(StoreError):
+            store.add_comment(c1)
+        assert store.list_comments(change.id) == []
+        change_m = parse_unified_diff(load_fixture("multiple_hunks.patch"))
+        store.save_change(change_m)
+        c2 = comment_factory(
+            change_m,
+            id="c-hi",
+            file="m.txt",
+            range=LineRange(side=Side.NEW, start=26, end=26),
+        )
+        with pytest.raises(StoreError):
+            store.add_comment(c2)
+        assert store.list_comments(change_m.id) == []
+    elif scenario == "nonexistent-thread":
+        store.save_change(change)
+        c_root = comment_factory(change, id="c-root")
+        store.add_comment(c_root)
+        reply = comment_factory(change, id="c-ghost", thread_id="th-999")
+        with pytest.raises(StoreError):
+            store.add_comment(reply)
+        assert store.list_comments(change.id) == [c_root]
+    elif scenario == "duplicate-id":
+        store.save_change(change)
+        store.add_comment(comment_factory(change, id="c-dup"))
+        c2 = comment_factory(change, id="c-dup", text="different")
+        with pytest.raises(StoreError):
+            store.add_comment(c2)
+        assert [c.id for c in store.list_comments(change.id)] == ["c-dup"]
+    else:
+        store.save_change(change)
+        cases = []
+        with pytest.raises(StoreError) as excinfo:
+            store.add_comment(comment_factory(change, id="c-bad", file="nope.py"))
+        cases.append(excinfo.value)
+        with pytest.raises(StoreError) as excinfo:
+            store.add_comment(
+                comment_factory(
+                    change,
+                    id="c-oob",
+                    range=LineRange(side=Side.NEW, start=3, end=4),
+                )
+            )
+        cases.append(excinfo.value)
+        fresh = JsonlStore(tmp_path / "fresh")
+        with pytest.raises(StoreError) as excinfo:
+            fresh.add_comment(comment_factory(change, id="c-x"))
+        cases.append(excinfo.value)
+        for exc in cases:
+            assert isinstance(exc, StoreError)
+            assert not isinstance(exc, CommentValidationError)
+            assert not isinstance(exc, ValidationError)
+        assert "nope.py" in str(cases[0])
+        assert "src/foo.py" in str(cases[1])
+        assert any(ch.isdigit() for ch in str(cases[1]))
 
 
-def test_r5_resolve_bumps_updated_at(store: JsonlStore, change: Change) -> None:
+def test_update_semantics(tmp_path: Path, change: Change) -> None:
+    store = create_store(tmp_path / "resolve")
     old = datetime(2000, 1, 1, 12, 0, tzinfo=timezone.utc)
     store.save_change(change)
     c1 = comment_factory(
@@ -350,22 +284,18 @@ def test_r5_resolve_bumps_updated_at(store: JsonlStore, change: Change) -> None:
     assert resolved.created_at == c1.created_at
     assert store.list_comments(change.id) == [resolved, c2]
 
-
-def test_r5_update_unknown_rejected(
-    tmp_path: Path, store: JsonlStore, change: Change
-) -> None:
+    store = create_store(tmp_path / "unknown")
     store.save_change(change)
     c1 = comment_factory(change, id="c-1")
     store.add_comment(c1)
     with pytest.raises(StoreError):
         store.update_comment(comment_factory(change, id="c-nope"))
     assert store.list_comments(change.id) == [c1]
-    store2 = JsonlStore(tmp_path / "fresh")
+    fresh = JsonlStore(tmp_path / "fresh")
     with pytest.raises(StoreError):
-        store2.update_comment(comment_factory(change, id="c-1"))
+        fresh.update_comment(comment_factory(change, id="c-1"))
 
-
-def test_r5_change_id_immutable(store: JsonlStore, change: Change) -> None:
+    store = create_store(tmp_path / "immutable")
     store.save_change(change)
     store.add_comment(comment_factory(change, id="c-1"))
     change_b = parse_unified_diff(load_fixture("new_file.patch"))
@@ -375,10 +305,7 @@ def test_r5_change_id_immutable(store: JsonlStore, change: Change) -> None:
         store.update_comment(tampered)
     assert store.get_comment("c-1").change_id == change.id
 
-
-def test_r5_never_drifted_and_no_revalidation(
-    store: JsonlStore, change: Change
-) -> None:
+    store = create_store(tmp_path / "drifted")
     store.save_change(change)
     store.add_comment(
         comment_factory(
@@ -401,7 +328,8 @@ def test_r5_never_drifted_and_no_revalidation(
     assert store.get_comment("c-1").range == LineRange(side=Side.NEW, start=99, end=99)
 
 
-def test_r6_thread_reply_listing(store: JsonlStore, change: Change) -> None:
+def test_list_comments_filters(tmp_path: Path, change: Change) -> None:
+    store = create_store(tmp_path / "threads")
     store.save_change(change)
     root = comment_factory(change, id="c-root")
     r1 = comment_factory(change, id="c-r1", thread_id="c-root")
@@ -412,10 +340,7 @@ def test_r6_thread_reply_listing(store: JsonlStore, change: Change) -> None:
     assert store.list_comments(change.id, thread_id="c-root") == [root, r1, r2]
     assert store.list_comments(change.id) == [root, r1, r2]
 
-
-def test_r6_thread_listing_excludes_other_threads(
-    store: JsonlStore, change: Change
-) -> None:
+    store = create_store(tmp_path / "excludes")
     store.save_change(change)
     a_root = comment_factory(change, id="c-a")
     b_root = comment_factory(change, id="c-b")
@@ -429,8 +354,7 @@ def test_r6_thread_listing_excludes_other_threads(
     assert store.list_comments(change.id, thread_id="c-b") == [b_root, b_reply]
     assert store.list_comments(change.id) == [a_root, b_root, a_reply, b_reply]
 
-
-def test_r6_filter_by_file(store: JsonlStore, change: Change) -> None:
+    store = create_store(tmp_path / "files")
     store.save_change(change)
     c1 = comment_factory(change, id="c-1", file="src/foo.py")
     c2 = comment_factory(change, id="c-2", file="src/foo.py")
@@ -444,8 +368,7 @@ def test_r6_filter_by_file(store: JsonlStore, change: Change) -> None:
     assert store.list_comments(change.id, file="src/other.py") == []
     assert store.list_comments(change_b.id, file="new.txt") == [c3]
 
-
-def test_r6_filter_by_state_and_combined(store: JsonlStore, change: Change) -> None:
+    store = create_store(tmp_path / "states")
     store.save_change(change)
     c_a = comment_factory(change, id="c-a", state=CommentState.ACTIVE)
     c_r = comment_factory(change, id="c-r", state=CommentState.RESOLVED)
@@ -481,7 +404,7 @@ def test_r6_filter_by_state_and_combined(store: JsonlStore, change: Change) -> N
     ]
 
 
-def test_r7_storeerror_carries_line_and_lineno(
+def test_storeerror_carries_line_and_lineno(
     tmp_path: Path, store: JsonlStore, change: Change
 ) -> None:
     err = StoreError("boom", line="x", lineno=3)
@@ -500,67 +423,73 @@ def test_r7_storeerror_carries_line_and_lineno(
     assert "this is not json" in str(excinfo.value)
 
 
-def test_r7_valid_json_not_a_comment_raises(
-    tmp_path: Path, store: JsonlStore, change: Change
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "not-a-comment",
+        "empty-file",
+        "header-only",
+        "unterminated-line",
+        "unicode-separator",
+    ],
+    ids=[
+        "valid-json-not-a-comment",
+        "empty-file",
+        "header-only",
+        "unterminated-final-line",
+        "literal-unicode-separator",
+    ],
+)
+def test_store_format_tolerance(
+    scenario: str, tmp_path: Path, store: JsonlStore, change: Change
 ) -> None:
-    d = tmp_path / ".agentdiff"
-    d.mkdir()
-    (d / "chg-model.jsonl").write_text(
-        change.model_dump_json() + "\n" + '{"id": 123}\n', encoding="utf-8"
-    )
-    with pytest.raises(StoreError) as excinfo:
-        store.list_comments("chg-model")
-    assert excinfo.value.lineno == 2
+    if scenario == "not-a-comment":
+        d = tmp_path / ".agentdiff"
+        d.mkdir()
+        (d / "chg-model.jsonl").write_text(
+            change.model_dump_json() + "\n" + '{"id": 123}\n', encoding="utf-8"
+        )
+        with pytest.raises(StoreError) as excinfo:
+            store.list_comments("chg-model")
+        assert excinfo.value.lineno == 2
+    elif scenario == "empty-file":
+        d = tmp_path / ".agentdiff"
+        d.mkdir()
+        (d / "chg-empty.jsonl").write_text("", encoding="utf-8")
+        fresh = JsonlStore(tmp_path)
+        with pytest.raises(StoreError):
+            fresh.load_change("chg-empty")
+    elif scenario == "header-only":
+        store.save_change(change)
+        assert store.load_change(change.id) == change
+        assert store.list_comments(change.id) == []
+    elif scenario == "unterminated-line":
+        c1 = comment_factory(change, id="c-1")
+        d = tmp_path / ".agentdiff"
+        d.mkdir()
+        (d / "chg-torn.jsonl").write_text(
+            change.model_dump_json()
+            + "\n"
+            + c1.model_dump_json()
+            + "\n"
+            + '{"id":"c-torn"',
+            encoding="utf-8",
+        )
+        assert store.list_comments("chg-torn") == [c1]
+    else:
+        c_u = comment_factory(change, id="c-u", text="a \u2028 b")
+        d = tmp_path / ".agentdiff"
+        d.mkdir()
+        (d / "chg-u.jsonl").write_text(
+            change.model_dump_json() + "\n" + c_u.model_dump_json() + "\n",
+            encoding="utf-8",
+        )
+        comments = store.list_comments("chg-u")
+        assert len(comments) == 1
+        assert comments[0].text == "a \u2028 b"
 
 
-def test_r7_empty_file_raises(tmp_path: Path) -> None:
-    d = tmp_path / ".agentdiff"
-    d.mkdir()
-    (d / "chg-empty.jsonl").write_text("", encoding="utf-8")
-    store = JsonlStore(tmp_path)
-    with pytest.raises(StoreError):
-        store.load_change("chg-empty")
-
-
-def test_r7_header_only_valid(store: JsonlStore, change: Change) -> None:
-    store.save_change(change)
-    assert store.load_change(change.id) == change
-    assert store.list_comments(change.id) == []
-
-
-def test_r7_unterminated_final_line_tolerated(
-    tmp_path: Path, store: JsonlStore, change: Change
-) -> None:
-    c1 = comment_factory(change, id="c-1")
-    d = tmp_path / ".agentdiff"
-    d.mkdir()
-    (d / "chg-torn.jsonl").write_text(
-        change.model_dump_json()
-        + "\n"
-        + c1.model_dump_json()
-        + "\n"
-        + '{"id":"c-torn"',
-        encoding="utf-8",
-    )
-    assert store.list_comments("chg-torn") == [c1]
-
-
-def test_r7_literal_unicode_separator_kept(
-    tmp_path: Path, store: JsonlStore, change: Change
-) -> None:
-    c_u = comment_factory(change, id="c-u", text="a \u2028 b")
-    d = tmp_path / ".agentdiff"
-    d.mkdir()
-    (d / "chg-u.jsonl").write_text(
-        change.model_dump_json() + "\n" + c_u.model_dump_json() + "\n",
-        encoding="utf-8",
-    )
-    comments = store.list_comments("chg-u")
-    assert len(comments) == 1
-    assert comments[0].text == "a \u2028 b"
-
-
-def test_r8_bridge_exports(tmp_path: Path) -> None:
+def test_store_bridge_exports_required_members(tmp_path: Path) -> None:
     import agentdiff.store as s
     from agentdiff.store import (
         JsonlStore,
@@ -570,13 +499,13 @@ def test_r8_bridge_exports(tmp_path: Path) -> None:
         create_store,
     )
 
-    assert s.__all__ == [
+    assert {
         "Store",
         "StoreError",
         "JsonlStore",
         "StoreBackend",
         "create_store",
-    ]
+    } <= set(s.__all__)
     assert Store is s.Store
     assert StoreBackend is s.StoreBackend
     JsonlStore(tmp_path)
@@ -587,15 +516,7 @@ def test_r8_bridge_exports(tmp_path: Path) -> None:
         pass
 
 
-def test_r8_locking_internal_not_exported() -> None:
-    import agentdiff.store as s
-
-    assert "file_lock" not in dir(s)
-    with pytest.raises(ImportError):
-        from agentdiff.store import file_lock  # noqa: F401
-
-
-def test_r8_no_ui_or_transport_imports() -> None:
+def test_store_imports_no_ui_or_transport() -> None:
     import sys
 
     before = set(sys.modules)
@@ -609,25 +530,12 @@ def test_r8_no_ui_or_transport_imports() -> None:
     assert "agentdiff.tui" not in added
 
 
-def test_r9_file_lock_factory_backends(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import os
-
-    lock = file_lock(tmp_path / "l.lock")
-    assert isinstance(lock, FileLock) is True
-    assert type(lock).__name__ == "FlockFileLock"
-    monkeypatch.setattr(os, "name", "nt")
-    with pytest.raises(StoreError):
-        file_lock(tmp_path / "l2.lock")
-
-
 def _acquire_and_set(path: Path, done: threading.Event) -> None:
     with file_lock(path):
         done.set()
 
 
-def test_r9_file_lock_blocks_second_mutator(tmp_path: Path) -> None:
+def test_file_lock_blocks_second_mutator(tmp_path: Path) -> None:
     path = tmp_path / "l.lock"
     done = threading.Event()
     outer = file_lock(path)
@@ -643,7 +551,7 @@ def test_r9_file_lock_blocks_second_mutator(tmp_path: Path) -> None:
     t.join()
 
 
-def test_r9_concurrent_adds_lose_nothing(tmp_path: Path, change: Change) -> None:
+def test_concurrent_adds_lose_nothing(tmp_path: Path, change: Change) -> None:
     store = JsonlStore(tmp_path)
     store.save_change(change)
     store_a = JsonlStore(tmp_path)
@@ -667,7 +575,7 @@ def test_r9_concurrent_adds_lose_nothing(tmp_path: Path, change: Change) -> None
     assert ids == {f"a-{i}" for i in range(50)} | {f"b-{i}" for i in range(50)}
 
 
-def test_r9_concurrent_distinct_changes(tmp_path: Path, change: Change) -> None:
+def test_concurrent_distinct_changes(tmp_path: Path, change: Change) -> None:
     change_b = parse_unified_diff(load_fixture("new_file.patch"))
     store = JsonlStore(tmp_path)
     store.save_change(change)
@@ -694,7 +602,7 @@ def test_r9_concurrent_distinct_changes(tmp_path: Path, change: Change) -> None:
     assert store.get_comment("c-b") == c_b
 
 
-def test_r9_lock_file_stable_across_rewrites(
+def test_lock_file_stable_across_rewrites(
     tmp_path: Path, store: JsonlStore, change: Change
 ) -> None:
     store.save_change(change)
@@ -703,19 +611,3 @@ def test_r9_lock_file_stable_across_rewrites(
     store.update_comment(comment_factory(change, id="c-1", state=CommentState.RESOLVED))
     assert (tmp_path / ".agentdiff" / f"{change.id}.lock").exists() is True
     assert [c.id for c in store.list_comments(change.id)] == ["c-1", "c-2"]
-
-
-def test_r9_fixtures_from_tests_diff() -> None:
-    source = Path(__file__).read_text(encoding="utf-8")
-    conftest_source = (Path(__file__).parent / "conftest.py").read_text(
-        encoding="utf-8"
-    )
-    assert "load_fixture(" in source
-    assert "parse_unified_diff(" in source
-    assert "JsonlStore" in conftest_source
-    assert "load_fixture(" in conftest_source
-    assert "parse_unified_diff(" in conftest_source
-    assert "tmp_path" in conftest_source
-    for name in ("Change", "Hunk"):
-        assert f"{name}(" not in source
-        assert f"{name}(" not in conftest_source

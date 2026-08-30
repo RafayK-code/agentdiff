@@ -9,68 +9,57 @@ from agentdiff.diff.serialize import serialize_unified_diff
 from agentdiff.model.types import Change, FileDiff, Hunk, Line
 
 
-def test_r7_roundtrip_basic() -> None:
-    change = parse_unified_diff(load_fixture("basic.patch"))
+@pytest.mark.parametrize("name", _WELL_FORMED_FIXTURE_NAMES)
+def test_serialize_roundtrip(name: str) -> None:
+    change = parse_unified_diff(load_fixture(name))
     reparsed = parse_unified_diff(serialize_unified_diff(change))
     assert reparsed.files == change.files
 
 
 @pytest.mark.parametrize("name", ["rename.patch", "mode_only.patch"])
-def test_r7_canonical_id_stable(name: str) -> None:
+def test_serialize_keeps_change_id(name: str) -> None:
     change = parse_unified_diff(load_fixture(name))
     reparsed = parse_unified_diff(serialize_unified_diff(change))
     assert reparsed.files == change.files
     assert reparsed.id == change.id
 
 
-@pytest.mark.parametrize("name", _WELL_FORMED_FIXTURE_NAMES)
-def test_r7_roundtrip_all_edge_fixtures(name: str) -> None:
+@pytest.mark.parametrize(
+    "name,expected_substrings,absent_substrings",
+    [
+        ("new_file.patch", ["new file mode 100644", "--- /dev/null"], []),
+        ("deleted_file.patch", ["deleted file mode 100644", "+++ /dev/null"], []),
+        (
+            "mode_only.patch",
+            ["old mode 100644", "new mode 100755"],
+            ["rename"],
+        ),
+        ("rename.patch", ["rename from old.py", "rename to new.py"], []),
+        ("binary.patch", ["Binary files a/img.bin and b/img.bin differ"], []),
+    ],
+    ids=[
+        "new-file-mode",
+        "deleted-file-mode",
+        "mode-only-not-rename",
+        "rename-lines",
+        "binary-line",
+    ],
+)
+def test_serialize_emits_modes_and_headers(
+    name: str,
+    expected_substrings: list[str],
+    absent_substrings: list[str],
+) -> None:
     change = parse_unified_diff(load_fixture(name))
-    reparsed = parse_unified_diff(serialize_unified_diff(change))
-    assert reparsed.files == change.files
-
-
-def test_r7_serializer_emits_new_file_mode() -> None:
-    change = parse_unified_diff(load_fixture("new_file.patch"))
     out = serialize_unified_diff(change)
-    assert "new file mode 100644" in out
-    assert "--- /dev/null" in out
+    for substring in expected_substrings:
+        assert substring in out
+    for substring in absent_substrings:
+        assert substring not in out
     assert parse_unified_diff(out).files == change.files
 
 
-def test_r7_serializer_emits_deleted_file_mode() -> None:
-    change = parse_unified_diff(load_fixture("deleted_file.patch"))
-    out = serialize_unified_diff(change)
-    assert "deleted file mode 100644" in out
-    assert "+++ /dev/null" in out
-    assert parse_unified_diff(out).files == change.files
-
-
-def test_r7_serializer_mode_only_not_rename() -> None:
-    change = parse_unified_diff(load_fixture("mode_only.patch"))
-    out = serialize_unified_diff(change)
-    assert "old mode 100644" in out
-    assert "new mode 100755" in out
-    assert "rename" not in out
-    assert parse_unified_diff(out).files == change.files
-
-
-def test_r7_serializer_rename_lines() -> None:
-    change = parse_unified_diff(load_fixture("rename.patch"))
-    out = serialize_unified_diff(change)
-    assert "rename from old.py" in out
-    assert "rename to new.py" in out
-    assert parse_unified_diff(out).files == change.files
-
-
-def test_r7_serializer_binary_line() -> None:
-    change = parse_unified_diff(load_fixture("binary.patch"))
-    out = serialize_unified_diff(change)
-    assert "Binary files a/img.bin and b/img.bin differ" in out
-    assert parse_unified_diff(out).files == change.files
-
-
-def test_r7_serializer_recomputes_counts() -> None:
+def test_serialize_recomputes_hunk_counts() -> None:
     hunk = Hunk.model_construct(
         old_start=1,
         old_count=1,

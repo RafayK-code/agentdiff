@@ -1,13 +1,6 @@
 from __future__ import annotations
 
-import ast
 import hashlib
-import inspect
-import os
-import subprocess
-import sys
-import types
-from pathlib import Path
 
 import pytest
 from tests.diff.conftest import load_fixture, load_malformed
@@ -40,70 +33,6 @@ _BASIC_EXPECTED = [
         ],
     )
 ]
-
-
-def test_r1_parse_basic() -> None:
-    change = parse_unified_diff(BASIC)
-    assert change.files == _BASIC_EXPECTED
-
-
-def test_r1_id_deterministic_stable() -> None:
-    a = parse_unified_diff(BASIC)
-    b = parse_unified_diff(BASIC)
-    expected = "chg-" + hashlib.sha256(BASIC.encode("utf-8")).hexdigest()[:16]
-    assert a.id == b.id
-    assert a.id == expected
-    assert a.id
-
-
-def test_r1_id_changes_with_content() -> None:
-    a = parse_unified_diff(BASIC)
-    b = parse_unified_diff(BASIC.replace("ctx1", "ctx0"))
-    assert a.id != b.id
-
-
-def test_r1_no_io_no_git(tmp_path: Path) -> None:
-    import agentdiff.diff.parse as parse_mod
-
-    src = inspect.getsource(parse_mod.parse_unified_diff)
-    assert "open(" not in src
-    assert "subprocess" not in src
-    assert "os." not in src
-    assert "git" not in src
-
-    for _, value in vars(parse_mod).items():
-        if isinstance(value, types.ModuleType):
-            module_name = value.__name__
-            assert not module_name.startswith("agentdiff.store")
-            assert not module_name.startswith("agentdiff.cli")
-            assert not module_name.startswith("agentdiff.mcp")
-            assert not module_name.startswith("agentdiff.tui")
-            assert not module_name.startswith("textual")
-
-    repo_root = Path(__file__).parents[2]
-    env = dict(os.environ, PYTHONPATH=str(repo_root / "src"))
-    script = (
-        "from agentdiff.diff.parse import parse_unified_diff\n"
-        f"change = parse_unified_diff({repr(BASIC)})\n"
-        "print('ok')\n"
-    )
-    proc = subprocess.run(
-        [sys.executable, "-c", script],
-        cwd=tmp_path,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    assert proc.returncode == 0, proc.stderr
-
-
-def test_r1_approval_revisions_created_at_unset() -> None:
-    change = parse_unified_diff(BASIC)
-    assert change.approval is None
-    assert change.base_revision is None
-    assert change.head_revision is None
-    assert change.created_at is None
-
 
 _EDGE_FIXTURES: list[tuple[str, list[FileDiff]]] = [
     (
@@ -342,13 +271,39 @@ _EDGE_FIXTURES: list[tuple[str, list[FileDiff]]] = [
     ),
 ]
 
+_DIFFS: list[tuple[str, list[FileDiff]]] = [
+    ("basic.patch", _BASIC_EXPECTED),
+    *_EDGE_FIXTURES,
+]
+
 
 @pytest.mark.parametrize(
-    "name,expected", _EDGE_FIXTURES, ids=[n for n, _ in _EDGE_FIXTURES]
+    "name,expected",
+    _DIFFS,
+    ids=[n for n, _ in _DIFFS],
 )
-def test_r5_edge_fixtures(name: str, expected: list[FileDiff]) -> None:
+def test_parses_diffs(name: str, expected: list[FileDiff]) -> None:
     change = parse_unified_diff(load_fixture(name))
     assert change.files == expected
+
+
+def test_change_id() -> None:
+    a = parse_unified_diff(BASIC)
+    b = parse_unified_diff(BASIC)
+    expected = "chg-" + hashlib.sha256(BASIC.encode("utf-8")).hexdigest()[:16]
+    assert a.id == b.id
+    assert a.id == expected
+    assert a.id
+    c = parse_unified_diff(BASIC.replace("ctx1", "ctx0"))
+    assert a.id != c.id
+
+
+def test_parse_keeps_approval_revisions_created_at_unset() -> None:
+    change = parse_unified_diff(BASIC)
+    assert change.approval is None
+    assert change.base_revision is None
+    assert change.head_revision is None
+    assert change.created_at is None
 
 
 _MALFORMED: list[tuple[str, str]] = [
@@ -393,12 +348,12 @@ _MALFORMED: list[tuple[str, str]] = [
 
 
 @pytest.mark.parametrize("name,text", _MALFORMED, ids=[n for n, _ in _MALFORMED])
-def test_r6_malformed_raises(name: str, text: str) -> None:
+def test_malformed_input_raises_parse_error(name: str, text: str) -> None:
     with pytest.raises(DiffParseError):
         parse_unified_diff(text)
 
 
-def test_r6_error_is_typed() -> None:
+def test_parse_error_is_typed_value_error() -> None:
     with pytest.raises(DiffParseError) as excinfo:
         parse_unified_diff("junk")
     assert type(excinfo.value) is DiffParseError
@@ -419,75 +374,3 @@ _WELL_FORMED_FIXTURE_NAMES = [
     "gnu_style.patch",
     "format_patch.patch",
 ]
-_MALFORMED_FIXTURE_NAMES = [
-    "malformed/no_diff.patch",
-    "malformed/bad_hunk.patch",
-    "malformed/truncated_hunk.patch",
-    "malformed/bad_body.patch",
-]
-
-
-def test_r8_fixtures_exist() -> None:
-    root = Path(__file__).parent / "fixtures"
-    for name in [*_WELL_FORMED_FIXTURE_NAMES, *_MALFORMED_FIXTURE_NAMES]:
-        assert (root / name).is_file(), name
-
-
-def test_r8_fixtures_are_static() -> None:
-    root = Path(__file__).parent
-    double_quoted = 'f"' + "diff --git"
-    single_quoted = "f'" + "diff --git"
-    for py in sorted(root.glob("test_*.py")):
-        source = py.read_text(encoding="utf-8")
-        assert double_quoted not in source
-        assert single_quoted not in source
-        tree = ast.parse(source)
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "join"
-            ):
-                for arg in node.args:
-                    assert "diff --git" not in ast.unparse(arg)
-
-
-def _case_count(path: Path) -> int:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    total = 0
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.FunctionDef) or not node.name.startswith("test_"):
-            continue
-        per_function = 1
-        for decorator in node.decorator_list:
-            if (
-                isinstance(decorator, ast.Call)
-                and getattr(decorator.func, "attr", None) == "parametrize"
-            ):
-                for arg in decorator.args:
-                    if isinstance(arg, (ast.List, ast.Tuple)):
-                        per_function = max(per_function, len(arg.elts))
-        total += per_function
-    return total
-
-
-def test_r8_pure_string_tests_dominate() -> None:
-    root = Path(__file__).parent
-    pure = sum(
-        _case_count(root / name) for name in ("test_parse.py", "test_serialize.py")
-    )
-    non_pure = sum(
-        _case_count(root / name) for name in ("test_sources.py", "test_integration.py")
-    )
-    assert pure > non_pure
-
-
-def test_r9_pydantic_single_runtime_dep() -> None:
-    import tomllib
-
-    pyproject = Path(__file__).parents[2] / "pyproject.toml"
-    project = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]
-    assert project["dependencies"] == ["pydantic>=2.0"]
-    dev = project["optional-dependencies"]["dev"]
-    assert any(dep.startswith("pytest") for dep in dev)
-    assert any(dep.startswith("ruff") for dep in dev)

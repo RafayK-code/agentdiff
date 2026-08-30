@@ -5,108 +5,119 @@ from datetime import datetime
 import pytest
 from pydantic import ValidationError
 
-from agentdiff.model.types import Approval, Change, FileDiff, Hunk, Line, Side
+from agentdiff.model.types import Approval, Change, Hunk, Line, Side
 
 
-def test_r2_line_kind_literal() -> None:
-    with pytest.raises(ValidationError):
-        Line(kind="foo", old_no=1, new_no=1, text="x")
-    Line(kind="ctx", old_no=1, new_no=1, text="x")
-    Line(kind="add", old_no=None, new_no=1, text="x")
-    Line(kind="del", old_no=1, new_no=None, text="x")
+@pytest.mark.parametrize(
+    "kind,old_no,new_no,text,expect_error",
+    [
+        ("foo", 1, 1, "x", True),
+        ("ctx", 1, 1, "x", False),
+        ("add", None, 1, "x", False),
+        ("del", 1, None, "x", False),
+        ("ctx", None, 1, "x", True),
+        ("ctx", 1, None, "x", True),
+        ("add", 1, 1, "x", True),
+        ("del", 1, 1, "x", True),
+        ("add", None, 1, "x\n", True),
+    ],
+    ids=[
+        "unknown-kind",
+        "ctx-valid",
+        "add-valid",
+        "del-valid",
+        "ctx-missing-old-number",
+        "ctx-missing-new-number",
+        "add-with-old-number",
+        "del-with-new-number",
+        "text-with-newline",
+    ],
+)
+def test_line_validation(
+    kind: str, old_no: int | None, new_no: int | None, text: str, expect_error: bool
+) -> None:
+    if expect_error:
+        with pytest.raises(ValidationError):
+            Line(kind=kind, old_no=old_no, new_no=new_no, text=text)
+    else:
+        Line(kind=kind, old_no=old_no, new_no=new_no, text=text)
 
 
-def test_r2_line_ctx_requires_both_numbers() -> None:
-    with pytest.raises(ValidationError):
-        Line(kind="ctx", old_no=None, new_no=1, text="x")
-    with pytest.raises(ValidationError):
-        Line(kind="ctx", old_no=1, new_no=None, text="x")
+@pytest.mark.parametrize(
+    "kwargs,expect_error",
+    [
+        (
+            {
+                "old_start": 1,
+                "old_count": 2,
+                "new_start": 1,
+                "new_count": 1,
+                "lines": [
+                    Line(kind="ctx", old_no=1, new_no=1, text="a"),
+                    Line(kind="del", old_no=2, new_no=None, text="b"),
+                ],
+            },
+            False,
+        ),
+        (
+            {
+                "old_start": 1,
+                "old_count": 1,
+                "new_start": 1,
+                "new_count": 2,
+                "lines": [Line(kind="ctx", old_no=1, new_no=1, text="a")],
+            },
+            True,
+        ),
+        (
+            {
+                "old_start": -1,
+                "old_count": 0,
+                "new_start": 0,
+                "new_count": 0,
+                "lines": [],
+            },
+            True,
+        ),
+        (
+            {
+                "old_start": 1,
+                "old_count": 2,
+                "new_start": 1,
+                "new_count": 2,
+                "lines": [
+                    Line(kind="ctx", old_no=2, new_no=1, text="a"),
+                    Line(kind="ctx", old_no=1, new_no=2, text="b"),
+                ],
+            },
+            True,
+        ),
+    ],
+    ids=[
+        "counts-consistent",
+        "counts-inconsistent",
+        "nonnegative-numbers",
+        "line-numbers-increasing",
+    ],
+)
+def test_hunk_validation(kwargs: dict[str, object], expect_error: bool) -> None:
+    if expect_error:
+        with pytest.raises(ValidationError):
+            Hunk(**kwargs)
+    else:
+        Hunk(**kwargs)
 
 
-def test_r2_line_add_no_old_no() -> None:
-    with pytest.raises(ValidationError):
-        Line(kind="add", old_no=1, new_no=1, text="x")
-
-
-def test_r2_line_del_no_new_no() -> None:
-    with pytest.raises(ValidationError):
-        Line(kind="del", old_no=1, new_no=1, text="x")
-
-
-def test_r2_line_text_no_newline() -> None:
-    with pytest.raises(ValidationError):
-        Line(kind="add", old_no=None, new_no=1, text="x\n")
-
-
-def test_r2_hunk_counts_consistent() -> None:
-    Hunk(
-        old_start=1,
-        old_count=2,
-        new_start=1,
-        new_count=1,
-        lines=[
-            Line(kind="ctx", old_no=1, new_no=1, text="a"),
-            Line(kind="del", old_no=2, new_no=None, text="b"),
-        ],
-    )
-
-
-def test_r2_hunk_counts_inconsistent() -> None:
-    with pytest.raises(ValidationError):
-        Hunk(
-            old_start=1,
-            old_count=1,
-            new_start=1,
-            new_count=2,
-            lines=[Line(kind="ctx", old_no=1, new_no=1, text="a")],
-        )
-
-
-def test_r2_hunk_nonnegative_numbers() -> None:
-    with pytest.raises(ValidationError):
-        Hunk(old_start=-1, old_count=0, new_start=0, new_count=0, lines=[])
-
-
-def test_r2_hunk_line_numbers_increasing() -> None:
-    with pytest.raises(ValidationError):
-        Hunk(
-            old_start=1,
-            old_count=2,
-            new_start=1,
-            new_count=2,
-            lines=[
-                Line(kind="ctx", old_no=2, new_no=1, text="a"),
-                Line(kind="ctx", old_no=1, new_no=2, text="b"),
-            ],
-        )
-
-
-def test_r2_change_defaults() -> None:
+def test_change_defaults_and_side_enum() -> None:
     change = Change(id="x", files=[])
     assert change.base_revision is None
     assert change.head_revision is None
     assert change.approval is None
     assert change.created_at is None
 
-
-def test_r2_side_enum() -> None:
     assert Side.OLD.value == "OLD"
     assert Side.NEW.value == "NEW"
     assert set(Side) == {Side.OLD, Side.NEW}
-
-
-def test_r2_model_re_export() -> None:
-    from agentdiff.model import Change as BridgeChange
-    from agentdiff.model import FileDiff as BridgeFileDiff
-    from agentdiff.model import Hunk as BridgeHunk
-    from agentdiff.model import Line as BridgeLine
-    from agentdiff.model import Side as BridgeSide
-
-    assert BridgeChange is Change
-    assert BridgeFileDiff is FileDiff
-    assert BridgeHunk is Hunk
-    assert BridgeLine is Line
-    assert BridgeSide is Side
 
 
 def test_approval_shape() -> None:
