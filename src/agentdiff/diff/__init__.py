@@ -4,8 +4,10 @@ from agentdiff.diff.sources import (
     CommandRunner,
     GitDiffError,
     NoCommitsError,
+    current_branch,
     diff_from_git,
     diff_from_patch,
+    head_commit_title,
 )
 
 __all__ = [
@@ -13,8 +15,10 @@ __all__ = [
     "DiffParseError",
     "GitDiffError",
     "NoCommitsError",
+    "current_branch",
     "diff_from_git",
     "diff_from_patch",
+    "head_commit_title",
     "parse_unified_diff",
     "serialize_unified_diff",
 ]

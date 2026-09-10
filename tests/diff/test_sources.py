@@ -12,8 +12,10 @@ from agentdiff.diff import sources as sources_module
 from agentdiff.diff.parse import DiffParseError, parse_unified_diff
 from agentdiff.diff.sources import (
     GitDiffError,
+    current_branch,
     diff_from_git,
     diff_from_patch,
+    head_commit_title,
 )
 
 BASIC = load_fixture("basic.patch")
@@ -325,6 +327,34 @@ def test_empty_range_diff_raises_parse_error() -> None:
 
     with pytest.raises(DiffParseError):
         diff_from_git(runner=fake)
+
+
+def test_current_branch_returns_name_or_none() -> None:
+    argv = ("git", "symbolic-ref", "--short", "-q", "HEAD")
+    attached = FakeGit({argv: _result(argv, stdout="feature/x\n")})
+    detached = FakeGit(
+        {
+            argv: _result(
+                argv,
+                returncode=1,
+                stderr="fatal: ref HEAD is not a symbolic ref",
+            )
+        }
+    )
+
+    assert current_branch(runner=attached) == "feature/x"
+    assert current_branch(runner=detached) is None
+
+
+def test_head_commit_title_returns_subject_or_none() -> None:
+    argv = ("git", "log", "-1", "--format=%s", "HEAD")
+    titled = FakeGit({argv: _result(argv, stdout="Add foo\n")})
+    missing = FakeGit(
+        {argv: _result(argv, returncode=128, stderr="fatal: bad revision")}
+    )
+
+    assert head_commit_title(runner=titled) == "Add foo"
+    assert head_commit_title(runner=missing) is None
 
 
 @pytest.mark.parametrize(

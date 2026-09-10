@@ -94,6 +94,34 @@ def diff_from_git(
     return change
 
 
+def current_branch(
+    *,
+    runner: CommandRunner | None = None,
+    cwd: str | PathLike[str] | None = None,
+) -> str | None:
+    """git symbolic-ref --short -q HEAD; None on detached HEAD or error."""
+    run = runner if runner is not None else _default_runner(cwd)
+    proc = run(["git", "symbolic-ref", "--short", "-q", "HEAD"])
+    if proc.returncode != 0:
+        return None
+    name = proc.stdout.strip()
+    return name or None
+
+
+def head_commit_title(
+    *,
+    runner: CommandRunner | None = None,
+    cwd: str | PathLike[str] | None = None,
+) -> str | None:
+    """The HEAD commit subject (git log -1 --format=%s); None on error."""
+    run = runner if runner is not None else _default_runner(cwd)
+    proc = run(["git", "log", "-1", "--format=%s", "HEAD"])
+    if proc.returncode != 0:
+        return None
+    title = proc.stdout.strip()
+    return title or None
+
+
 def diff_from_patch(path: str | PathLike[str]) -> Change:
     """Patch source (R4): read a unified-diff .patch file and parse it.
 

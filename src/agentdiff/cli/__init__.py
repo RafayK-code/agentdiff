@@ -15,7 +15,7 @@ Exit-code / stderr contract (R9):
 | store malformed record (``StoreError``)            | 1    | stderr: msg      |
 | I/O error (unwritable ``--out``)                   | 1    | stderr: msg      |
 | argparse parse failure                             | 2    | stderr (builtin) |
-| bare ``agentdiff`` on a TTY                        | 0    | stdout (message) |
+| bare ``agentdiff`` on a TTY                        | 0    | TUI launched     |
 | bare ``agentdiff`` piped                           | 1    | stderr (usage)   |
 +----------------------------------------------------+------+------------------+
 
@@ -26,7 +26,8 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Protocol, TextIO
 
 from agentdiff import __version__
@@ -34,11 +35,6 @@ from agentdiff.cli import changes, export
 from agentdiff.cli.common import store_for
 from agentdiff.cli.errors import CliError
 from agentdiff.store import Store, StoreError
-
-TUI_PENDING_MESSAGE = (
-    "The agentdiff TUI arrives in a later slice. "
-    "Use a subcommand for now (try 'agentdiff --help')."
-)
 
 
 class _Command(Protocol):
@@ -52,13 +48,23 @@ class _Command(Protocol):
 _COMMANDS: dict[str, _Command] = {"changes": changes, "export": export}
 
 
-def _run_bare(parser: argparse.ArgumentParser, out: TextIO, err: TextIO) -> int:
-    """TUI dispatch slot (R1a): slice 07 replaces this body with a TUI launch."""
-    if out.isatty():
-        out.write(TUI_PENDING_MESSAGE + "\n")
-        return 0
-    parser.print_usage(err)  # usage on stderr; piped context
-    return 1
+def _run_bare(
+    parser: argparse.ArgumentParser,
+    out: TextIO,
+    err: TextIO,
+    *,
+    root: Path,
+    launch: Callable[[Path], int] | None,
+) -> int:
+    """Bare dispatch (R1a): launch the TUI on a TTY, usage when piped."""
+    if not out.isatty():
+        parser.print_usage(err)  # usage on stderr; piped context
+        return 1
+    if launch is None:
+        from agentdiff.tui import run_tui
+
+        launch = run_tui
+    return launch(root)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -69,6 +75,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--version", action="store_true", help="print the version and exit"
+    )
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="repository root for the TUI (default: current directory)",
     )
     subparsers = parser.add_subparsers(
         dest="command",
@@ -85,10 +97,12 @@ def main(
     *,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
+    launch: Callable[[Path], int] | None = None,
 ) -> int:
     """Run the CLI. ``stdout``/``stderr`` default to ``sys.stdout``/``sys.stderr``
     (so capsys captures them); injected streams make the bare TTY branch
-    deterministic. Returns the process exit code (see module docstring)."""
+    deterministic. ``launch`` is the TUI entrypoint seam. Returns the process
+    exit code (see module docstring)."""
     out = sys.stdout if stdout is None else stdout
     err = sys.stderr if stderr is None else stderr
     parser = build_parser()
@@ -96,8 +110,8 @@ def main(
     if args.version:  # R1b — before ANY dispatch
         out.write(f"agentdiff {__version__}\n")
         return 0
-    if args.command is None:  # R1a — bare = TUI slot
-        return _run_bare(parser, out, err)
+    if args.command is None:  # R1a — bare = TUI
+        return _run_bare(parser, out, err, root=args.root or Path("."), launch=launch)
     try:
         store = store_for(args.root)  # factory only (R6)
         return _COMMANDS[args.command].run(args, store, out)
