@@ -3,6 +3,7 @@ from agentdiff.diff.serialize import serialize_unified_diff
 from agentdiff.diff.sources import (
     CommandRunner,
     GitDiffError,
+    NoCommitsError,
     diff_from_git,
     diff_from_patch,
 )
@@ -11,6 +12,7 @@ __all__ = [
     "CommandRunner",
     "DiffParseError",
     "GitDiffError",
+    "NoCommitsError",
     "diff_from_git",
     "diff_from_patch",
     "parse_unified_diff",

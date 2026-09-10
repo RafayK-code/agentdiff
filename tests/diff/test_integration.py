@@ -71,19 +71,23 @@ def test_real_git_repo_diff_hunks(tmp_path: Path) -> None:
     assert all(line.kind == "add" for line in nf_hunk.lines)
 
 
-def test_real_git_repo_worktree_diff(tmp_path: Path) -> None:
+def test_real_git_repo_default_range_diff(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
 
     _write_lines(repo / "data.txt", [f"line{i}" for i in range(1, 11)])
     _git(repo, "add", "data.txt")
     _git(repo, "commit", "-qm", "base")
+    base = _git(repo, "rev-parse", "HEAD")
 
     with (repo / "data.txt").open("a", encoding="utf-8") as handle:
         handle.write("line11\n")
+    _git(repo, "add", "data.txt")
+    _git(repo, "commit", "-qm", "head")
+    head = _git(repo, "rev-parse", "HEAD")
 
     change = diff_from_git(cwd=repo)
-    assert change.base_revision is None
-    assert change.head_revision is None
+    assert change.base_revision == base
+    assert change.head_revision == head
     assert len(change.files) == 1
     assert change.files[0].path == "data.txt"
