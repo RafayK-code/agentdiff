@@ -225,3 +225,27 @@ def test_golden_round_trips(approved_change, mixed_comments: list[Comment]) -> N
     paths = {f["path"] for f in doc["change"]["files"]}
     for comment in doc["comments"]:
         assert comment["file"] in paths
+
+
+def test_change_block_chain_fields(
+    approved_change, mixed_comments: list[Comment]
+) -> None:
+    parsed = json.loads(export_json(approved_change, mixed_comments))["change"]
+    assert list(parsed.keys()) == [
+        "id",
+        "prev_change",
+        "branch",
+        "base_revision",
+        "head_revision",
+        "approval",
+        "files",
+    ]
+    assert parsed["prev_change"] == "chg-00"
+    assert parsed["branch"] == "feat/x"
+
+
+def test_chain_head_emits_null_chain_fields() -> None:
+    head_out = export_json(parse_unified_diff(load_fixture("basic.patch")), [])
+    assert json.loads(head_out)["schema_version"] == SCHEMA_VERSION
+    assert '"prev_change": null' in head_out
+    assert '"branch": null' in head_out

@@ -33,13 +33,26 @@ class StoreError(RuntimeError):
 
 @runtime_checkable
 class Store(Protocol):
-    """Narrow persistence interface so backends are swappable (R1, D3)."""
+    """Narrow persistence interface so backends are swappable (R1, D3).
+
+    Lock contract (R6a, §5.1): a change that is not its branch's tip is
+    locked. ``add_comment`` and ``update_comment`` (which also covers replies
+    and resolve/unresolve) raise ``StoreError`` when the target change is
+    locked. Reads (``load_change``/``get_comment``/``list_comments``) are
+    unaffected — a locked patchset stays readable.
+    """
 
     def init(self) -> None: ...
 
     def save_change(self, change: Change) -> None: ...
 
     def load_change(self, change_id: str) -> Change | None: ...
+
+    def list_changes(self, branch: str | None = None) -> list[Change]:
+        """All stored changes, or one branch's chain when branch is given.
+        ``branch=None`` means no filter (every change, across all branches).
+        (R3)"""
+        ...
 
     def add_comment(self, comment: Comment) -> None: ...
 

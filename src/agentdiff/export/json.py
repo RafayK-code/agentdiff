@@ -55,9 +55,12 @@ def _approval_block(change: Change) -> dict[str, object] | None:
 
 
 def _change_block(change: Change) -> dict[str, object]:
-    """{id, base_revision, head_revision, approval, files} — order pinned. (R2)"""
+    """{id, prev_change, branch, base_revision, head_revision, approval, files}
+    — order pinned per §7; prev_change/branch nullable (R2)."""
     return {
         "id": change.id,
+        "prev_change": change.prev_change,
+        "branch": change.branch,
         "base_revision": change.base_revision,
         "head_revision": change.head_revision,
         "approval": _approval_block(change),

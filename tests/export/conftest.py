@@ -88,6 +88,8 @@ def _approved_change() -> Change:
     return change.model_copy(
         update={
             "id": "chg-01",
+            "prev_change": "chg-00",
+            "branch": "feat/x",
             "base_revision": "3f2a1b0",
             "head_revision": "9c7d0e1",
             "approval": Approval(

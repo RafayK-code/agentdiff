@@ -29,6 +29,7 @@ class JsonlStore:
         self._ensure_dir()
 
     def save_change(self, change: Change) -> None:
+        self._validate_chain(change)
         self._mutate(change.id, lambda _old, comments: (change, comments))
 
     def load_change(self, change_id: str) -> Change | None:
@@ -36,6 +37,19 @@ class JsonlStore:
         if not path.exists():
             return None
         return self._read_file(path)[0]
+
+    def list_changes(self, branch: str | None = None) -> list[Change]:
+        """Every stored change, or one branch's chain when branch is given.
+
+        ``branch=None`` means no filter. A missing ``.agentdiff/`` is an empty
+        store; the read never creates the directory. Malformed records raise
+        ``StoreError`` via ``_read_file`` (R3)."""
+        result: list[Change] = []
+        for path in sorted(self._dir.glob("*.jsonl")):
+            result.append(self._read_file(path)[0])
+        if branch is not None:
+            result = [c for c in result if c.branch == branch]
+        return result
 
     def add_comment(self, comment: Comment) -> None:
         self._mutate(
@@ -83,6 +97,46 @@ class JsonlStore:
 
     def _ensure_dir(self) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)
+
+    def _validate_chain(self, change: Change) -> None:
+        """Chain-integrity check on ingest (R6a): a referenced prev_change
+        must exist, be on the same branch, and not create a cycle."""
+        if change.prev_change is None:
+            return
+        prev = self.load_change(change.prev_change)
+        if prev is None:
+            raise StoreError(f"unknown prev_change {change.prev_change!r}")
+        if prev.branch != change.branch:
+            raise StoreError(
+                f"prev_change {change.prev_change!r} is not on branch {change.branch!r}"
+            )
+        seen = {change.id}
+        cur: Change | None = change
+        while cur is not None and cur.prev_change is not None:
+            if cur.prev_change in seen:
+                raise StoreError(f"chain cycle at {change.id!r}")
+            seen.add(cur.prev_change)
+            cur = self.load_change(cur.prev_change)
+
+    def _is_locked(self, change: Change) -> bool:
+        """A change is locked iff a same-branch change references it via
+        prev_change (§5.1). A change with branch=None has no chain and is
+        never locked (A8)."""
+        if change.branch is None:
+            return False
+        return any(
+            other.id != change.id and other.prev_change == change.id
+            for other in self.list_changes(branch=change.branch)
+        )
+
+    def _guard_writable(self, change: Change | None, change_id: str) -> None:
+        if change is None:
+            raise StoreError(f"unknown change {change_id!r}")
+        if self._is_locked(change):
+            raise StoreError(
+                f"change {change.id!r} is locked (not the tip of branch "
+                f"{change.branch!r})"
+            )
 
     def _path_for(self, change_id: str) -> Path:
         return self._dir / f"{change_id}.jsonl"
@@ -144,8 +198,7 @@ class JsonlStore:
         comments: list[Comment],
         comment: Comment,
     ) -> tuple[Change, list[Comment]]:
-        if change is None:
-            raise StoreError(f"unknown change {comment.change_id!r}")
+        self._guard_writable(change, comment.change_id)
         try:
             validate_comment(comment, change)
         except CommentValidationError as exc:
@@ -165,8 +218,7 @@ class JsonlStore:
         comments: list[Comment],
         comment: Comment,
     ) -> tuple[Change, list[Comment]]:
-        if change is None:
-            raise StoreError(f"unknown change {comment.change_id!r}")
+        self._guard_writable(change, comment.change_id)
         index = next((i for i, c in enumerate(comments) if c.id == comment.id), None)
         if index is None:
             raise StoreError(f"unknown comment id {comment.id!r}")

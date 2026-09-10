@@ -129,6 +129,8 @@ class Approval(BaseModel):
 
 class Change(BaseModel):
     id: str
+    prev_change: str | None = None
+    branch: str | None = None
     base_revision: str | None = None
     head_revision: str | None = None
     approval: Approval | None = None
