@@ -8,7 +8,14 @@ import pytest
 from tests.diff.conftest import load_fixture
 
 from agentdiff.diff.parse import parse_unified_diff
-from agentdiff.model import Change, Comment, CommentState, LineRange, Side
+from agentdiff.model import (
+    Change,
+    Comment,
+    CommentState,
+    LineRange,
+    Side,
+    Version,
+)
 from agentdiff.store import JsonlStore, Store, create_store
 
 _MISSING = object()
@@ -20,28 +27,34 @@ def comment_factory(
     *,
     id: str = "c",
     change_id: str | None = None,
+    revision: str | None = None,
     file: str = "src/foo.py",
     range: LineRange | None = _MISSING,  # type: ignore[assignment]
     text: str = "t",
     author: str = "alice",
     state: CommentState = CommentState.ACTIVE,
     drifted: bool = False,
-    thread_id: str | None = None,
+    in_reply_to: str | None = None,
+    anchor_snapshot: list[str] | None = None,
     created_at: datetime = _DEFAULT_AT,
     updated_at: datetime = _DEFAULT_AT,
 ) -> Comment:
     if range is _MISSING:
         range = LineRange(side=Side.NEW, start=1, end=1)
+    if revision is None:
+        revision = change.head_revision or ""
     return Comment(
         id=id,
         change_id=change_id if change_id is not None else change.id,
+        revision=revision,
         file=file,
         range=range,
         text=text,
         author=author,
         state=state,
         drifted=drifted,
-        thread_id=thread_id,
+        in_reply_to=in_reply_to,
+        anchor_snapshot=anchor_snapshot or [],
         created_at=created_at,
         updated_at=updated_at,
     )
@@ -51,16 +64,20 @@ def _parsed_basic() -> Change:
     return parse_unified_diff(load_fixture("basic.patch"))
 
 
+def _version(revision: str, created_at: datetime | None = None) -> Version:
+    return Version(
+        revision=revision, files=_parsed_basic().files, created_at=created_at
+    )
+
+
 @dataclass
 class CanonicalStore:
-    """The multi-branch chain store shared by the 05-cli store/CLI suites.
+    """The multi-branch version store shared by the store/CLI suites.
 
     Holds four changes parsed from ``basic.patch`` (file ``src/foo.py``) with
-    forced ids/branches/revisions: ``chg-aaa`` + ``chg-bbb`` on ``feat/x``
-    (linked, so ``chg-aaa`` is locked), ``chg-mmm`` on ``main``, and the
-    patch import ``chg-ppp`` (``branch=None``). Comments ``c-1``/``c-2`` are
-    added to ``chg-aaa`` while it is still the only feat/x change; the
-    ``chg-bbb`` link (which locks it) comes last.
+    forced ids/branches/revisions: ``chg-aaa`` and ``chg-bbb`` on ``feat/x``
+    (``chg-bbb`` has the later current version), ``chg-mmm`` on ``main``, and
+    the patch import ``chg-ppp`` (``branch=None``).
     """
 
     root: Path
@@ -81,52 +98,64 @@ class CanonicalStore:
 
 def build_canonical_store(root: Path) -> CanonicalStore:
     """Build the canonical store at ``root`` (store factory + ``save_change``)."""
-    base = _parsed_basic()
-    chg_aaa = base.model_copy(
-        update={
-            "id": "chg-aaa",
-            "branch": "feat/x",
-            "prev_change": None,
-            "base_revision": "3f2a1b0",
-            "head_revision": "9c7d0e1",
-        }
+    early = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    late = datetime(2024, 6, 1, tzinfo=timezone.utc)
+    chg_aaa = Change(
+        id="chg-aaa",
+        branch="feat/x",
+        base_revision="3f2a1b0",
+        versions=[_version("9c7d0e1", early)],
+        created_at=early,
     )
-    chg_bbb = base.model_copy(
-        update={
-            "id": "chg-bbb",
-            "branch": "feat/x",
-            "prev_change": "chg-aaa",
-            "base_revision": "9c7d0e1",
-            "head_revision": "d4e5f6a",
-        }
+    chg_bbb = Change(
+        id="chg-bbb",
+        branch="feat/x",
+        base_revision="9c7d0e1",
+        versions=[_version("d4e5f6a", late)],
+        created_at=late,
     )
-    chg_mmm = base.model_copy(
-        update={
-            "id": "chg-mmm",
-            "branch": "main",
-            "prev_change": None,
-            "base_revision": "abcdef0",
-            "head_revision": "1234567",
-        }
+    chg_mmm = Change(
+        id="chg-mmm",
+        branch="main",
+        base_revision="abcdef0",
+        versions=[_version("1234567", early)],
+        created_at=early,
     )
-    chg_ppp = base.model_copy(
-        update={
-            "id": "chg-ppp",
-            "branch": None,
-            "prev_change": None,
-            "base_revision": None,
-            "head_revision": None,
-        }
+    chg_ppp = Change(
+        id="chg-ppp",
+        branch=None,
+        base_revision=None,
+        versions=[_version("ppp0001")],
     )
     store = create_store(root)
     store.save_change(chg_aaa)
-    store.add_comment(comment_factory(chg_aaa, id="c-1", state=CommentState.ACTIVE))
-    store.add_comment(comment_factory(chg_aaa, id="c-2", state=CommentState.RESOLVED))
+    store.add_comment(
+        comment_factory(
+            chg_aaa, id="c-1", revision="9c7d0e1", state=CommentState.ACTIVE
+        )
+    )
+    store.add_comment(
+        comment_factory(
+            chg_aaa, id="c-2", revision="9c7d0e1", state=CommentState.RESOLVED
+        )
+    )
     store.save_change(chg_bbb)
-    store.add_comment(comment_factory(chg_bbb, id="c-3", state=CommentState.ACTIVE))
-    store.add_comment(comment_factory(chg_bbb, id="c-4", state=CommentState.CLOSED))
+    store.add_comment(
+        comment_factory(
+            chg_bbb, id="c-3", revision="d4e5f6a", state=CommentState.ACTIVE
+        )
+    )
+    store.add_comment(
+        comment_factory(
+            chg_bbb, id="c-4", revision="d4e5f6a", state=CommentState.CLOSED
+        )
+    )
     store.save_change(chg_mmm)
-    store.add_comment(comment_factory(chg_mmm, id="c-m", state=CommentState.ACTIVE))
+    store.add_comment(
+        comment_factory(
+            chg_mmm, id="c-m", revision="1234567", state=CommentState.ACTIVE
+        )
+    )
     store.save_change(chg_ppp)
     return CanonicalStore(
         root=root,

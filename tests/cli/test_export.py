@@ -10,7 +10,7 @@ from agentdiff.cli import main
 from agentdiff.export import export_json, export_markdown
 
 
-def test_export_change_checkout_independent_and_locked_readable(
+def test_export_change_checkout_independent(
     capsys: pytest.CaptureFixture[str],
     canonical_store: CanonicalStore,
     decoy_root: Path,
@@ -36,7 +36,7 @@ def test_export_change_checkout_independent_and_locked_readable(
     assert captured.err == ""
 
 
-def test_export_branch_yields_tip_only(
+def test_export_branch_yields_latest_change(
     capsys: pytest.CaptureFixture[str], canonical_store: CanonicalStore
 ) -> None:
     rc = main(
@@ -55,7 +55,7 @@ def test_export_branch_yields_tip_only(
     assert rc == 0
     assert captured.err == ""
     assert doc["change"]["id"] == "chg-bbb"
-    assert doc["change"]["prev_change"] == "chg-aaa"
+    assert doc["change"]["current_revision"] == "d4e5f6a"
     assert [c["id"] for c in doc["comments"]] == ["c-3"]
     for comment in doc["comments"]:
         assert comment["id"] not in ("c-1", "c-2")

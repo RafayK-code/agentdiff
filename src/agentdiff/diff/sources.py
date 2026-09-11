@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import subprocess
 from collections.abc import Callable, Sequence
+from datetime import datetime, timezone
 from os import PathLike
 
 from agentdiff.diff.parse import parse_unified_diff
-from agentdiff.model.types import Change
+from agentdiff.model.types import Change, stable_change_id
 
 CommandRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 
@@ -59,6 +60,10 @@ def _head_sha(run: CommandRunner, head: str) -> str:
     return proc.stdout.strip()
 
 
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def _empty_tree(run: CommandRunner) -> str:
     """The repo's empty-tree object id (read-only hash-object)."""
     return _run(run, _EMPTY_TREE_ARGV).strip()
@@ -80,17 +85,25 @@ def diff_from_git(
     runner: CommandRunner | None = None,
     cwd: str | PathLike[str] | None = None,
 ) -> Change:
-    """Git source (R1): review a committed range as resolved SHAs."""
+    """Git source (R3, R4): review a committed range as resolved SHAs.
+
+    Stamps the stable ``id``/``branch``/``base_revision`` and the version's head
+    revision and creation time; this is the ingest entry point.
+    """
     run = runner if runner is not None else _default_runner(cwd)
     head_sha = _head_sha(run, head or "HEAD")
     if base is None:
         base_sha = _default_base_sha(run, head_sha)
     else:
         base_sha = _rev_parse(run, base)
+    branch = current_branch(runner=run, cwd=cwd)
     text = _run(run, ["git", "diff", base_sha, head_sha])
     change = parse_unified_diff(text)
+    change.id = stable_change_id(branch, base_sha)
+    change.branch = branch
     change.base_revision = base_sha
-    change.head_revision = head_sha
+    change.versions[0].revision = head_sha
+    change.created_at = change.versions[0].created_at = _now_utc()
     return change
 
 

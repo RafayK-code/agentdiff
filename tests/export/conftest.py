@@ -6,10 +6,21 @@ import pytest
 from tests.diff.conftest import load_fixture
 
 from agentdiff.diff.parse import parse_unified_diff
-from agentdiff.model import Approval, Change, Comment, CommentState, LineRange, Side
+from agentdiff.model import (
+    Approval,
+    Change,
+    Comment,
+    CommentState,
+    LineRange,
+    Side,
+    Version,
+)
 
 CREATED_AT = datetime(2024, 1, 1, 14, 5, 0)
 APPROVED_AT = datetime(2024, 1, 1, 12, 0, 0)
+
+REV_1 = "9c7d0e1"
+REV_2 = "a1b2c3d"
 
 _MISSING = object()
 
@@ -17,13 +28,14 @@ _MISSING = object()
 def comment_factory(
     *,
     id: str = "c-1",
+    revision: str = REV_2,
     file: str = "src/foo.py",
     range: LineRange | None = _MISSING,
     text: str = "t",
     author: str = "alice",
     state: CommentState = CommentState.ACTIVE,
     drifted: bool = False,
-    thread_id: str | None = None,
+    in_reply_to: str | None = None,
     created_at: datetime = CREATED_AT,
 ) -> Comment:
     if range is _MISSING:
@@ -31,13 +43,14 @@ def comment_factory(
     return Comment(
         id=id,
         change_id="chg-01",
+        revision=revision,
         file=file,
         range=range,
         text=text,
         author=author,
         state=state,
         drifted=drifted,
-        thread_id=thread_id,
+        in_reply_to=in_reply_to,
         created_at=created_at,
         updated_at=created_at,
     )
@@ -53,6 +66,7 @@ def _mixed_comments() -> list[Comment]:
         ),
         comment_factory(
             id="c-old-resolved",
+            revision=REV_1,
             range=LineRange(side=Side.OLD, start=1, end=1),
             text="Old-side note",
             author="bob",
@@ -82,34 +96,33 @@ def _mixed_comments() -> list[Comment]:
             range=LineRange(side=Side.NEW, start=1, end=1),
             text="Threaded reply one",
             author="eve",
-            thread_id="t-1",
         ),
         comment_factory(
             id="c-thread-2",
             range=LineRange(side=Side.NEW, start=3, end=3),
             text="Threaded reply two",
             author="frank",
-            thread_id="t-1",
+            in_reply_to="c-thread-1",
         ),
     ]
 
 
 def _approved_change() -> Change:
-    change = parse_unified_diff(load_fixture("basic.patch"))
-    return change.model_copy(
-        update={
-            "id": "chg-01",
-            "prev_change": "chg-00",
-            "branch": "feat/x",
-            "base_revision": "3f2a1b0",
-            "head_revision": "9c7d0e1",
-            "approval": Approval(
-                status="APPROVED",
-                message="LGTM, ship it",
-                author="alice",
-                at=APPROVED_AT,
-            ),
-        }
+    basic_files = parse_unified_diff(load_fixture("basic.patch")).files
+    return Change(
+        id="chg-01",
+        branch="feat/x",
+        base_revision="3f2a1b0",
+        versions=[
+            Version(revision=REV_1, files=basic_files),
+            Version(revision=REV_2, files=basic_files),
+        ],
+        approval=Approval(
+            status="APPROVED",
+            message="LGTM, ship it",
+            author="alice",
+            at=APPROVED_AT,
+        ),
     )
 
 

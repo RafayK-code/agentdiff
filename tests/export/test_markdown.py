@@ -3,7 +3,23 @@ from __future__ import annotations
 from tests.export.conftest import comment_factory
 
 from agentdiff.export import export_markdown
-from agentdiff.model import Change, CommentState, FileDiff, LineRange, Side
+from agentdiff.model import (
+    Change,
+    CommentState,
+    FileDiff,
+    LineRange,
+    Side,
+    Version,
+)
+
+
+def _change(change_id: str, *paths: str) -> Change:
+    return Change(
+        id=change_id,
+        versions=[
+            Version(revision="rev-1", files=[FileDiff(path=path) for path in paths])
+        ],
+    )
 
 
 def test_markdown_header_and_trailing_newline(
@@ -20,16 +36,13 @@ def test_markdown_file_sections(approved_change, mixed_comments: list[object]) -
     for file in approved_change.files:
         assert out.count(f"## {file.path}") == 1
 
-    change = Change(id="chg-x", files=[FileDiff(path="a.py"), FileDiff(path="b.py")])
+    change = _change("chg-x", "a.py", "b.py")
     out = export_markdown(change, [])
     assert "## a.py" in out
     assert "## b.py" in out
     assert out.startswith("# Change chg-x\n")
 
-    change = Change(
-        id="chg-x",
-        files=[FileDiff(path="aaa.txt"), FileDiff(path="zzz.txt")],
-    )
+    change = _change("chg-x", "aaa.txt", "zzz.txt")
     comments = [
         comment_factory(id="c-1", file="aaa.txt"),
         comment_factory(id="c-2", file="zzz.txt"),
@@ -39,7 +52,7 @@ def test_markdown_file_sections(approved_change, mixed_comments: list[object]) -
 
 
 def test_markdown_comment_formatting() -> None:
-    change = Change(id="chg-01", files=[FileDiff(path="src/foo.py")])
+    change = _change("chg-01", "src/foo.py")
     comment = comment_factory(
         id="c-001",
         file="src/foo.py",
@@ -50,7 +63,7 @@ def test_markdown_comment_formatting() -> None:
     out = export_markdown(change, [comment])
     assert "- c-001: Rename this (NEW 2-2) [alice, ACTIVE]" in out
 
-    change = Change(id="chg-x", files=[FileDiff(path="a.txt")])
+    change = _change("chg-x", "a.txt")
     comment = comment_factory(
         id="c-1", file="a.txt", range=LineRange(side=Side.OLD, start=1, end=3)
     )
@@ -89,7 +102,7 @@ def test_markdown_comment_formatting() -> None:
 
 
 def test_export_markdown_omits_closed_by_default() -> None:
-    change = Change(id="chg-01", files=[FileDiff(path="src/foo.py")])
+    change = _change("chg-01", "src/foo.py")
     comments = [
         comment_factory(id="c-a", file="src/foo.py"),
         comment_factory(id="c-c", file="src/foo.py", state=CommentState.CLOSED),

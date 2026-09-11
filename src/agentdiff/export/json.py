@@ -55,22 +55,22 @@ def _approval_block(change: Change) -> dict[str, object] | None:
 
 
 def _change_block(change: Change) -> dict[str, object]:
-    """{id, prev_change, branch, base_revision, head_revision, approval, files}
-    — order pinned per §7; prev_change/branch nullable (R2)."""
+    """{id, branch, base_revision, current_revision, versions, approval, files}
+    — order pinned per §7; branch/base nullable (R12)."""
     return {
         "id": change.id,
-        "prev_change": change.prev_change,
         "branch": change.branch,
         "base_revision": change.base_revision,
-        "head_revision": change.head_revision,
+        "current_revision": change.head_revision,
+        "versions": [version.revision for version in change.versions],
         "approval": _approval_block(change),
         "files": [_file_block(f) for f in change.files],
     }
 
 
 def _comment_block(comment: Comment) -> dict[str, object]:
-    """{id, file, side, lines, text, author, thread_id, state, drifted,
-    created_at} — order pinned. (R3)"""
+    """{id, revision, file, side, lines, text, author, in_reply_to, state,
+    drifted, created_at} — order pinned. (R12)"""
     if comment.range is None:
         side: str | None = None
         lines: list[int] | None = None
@@ -79,12 +79,13 @@ def _comment_block(comment: Comment) -> dict[str, object]:
         lines = [comment.range.start, comment.range.end]  # 1-based inclusive
     return {
         "id": comment.id,
+        "revision": comment.revision,
         "file": comment.file,
         "side": side,
         "lines": lines,
         "text": comment.text,
         "author": comment.author,
-        "thread_id": comment.thread_id,
+        "in_reply_to": comment.in_reply_to,
         "state": comment.state.value,
         "drifted": comment.drifted,
         "created_at": _iso8601(comment.created_at),

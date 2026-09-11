@@ -298,12 +298,37 @@ def test_change_id() -> None:
     assert a.id != c.id
 
 
-def test_parse_keeps_approval_revisions_created_at_unset() -> None:
+def test_parse_keeps_approval_base_and_created_at_unset() -> None:
     change = parse_unified_diff(BASIC)
     assert change.approval is None
     assert change.base_revision is None
-    assert change.head_revision is None
     assert change.created_at is None
+    assert change.current is not None
+    assert change.current.created_at is None
+
+
+def test_change_identity_and_patch_content_id() -> None:
+    from agentdiff.model import Version, stable_change_id
+
+    assert stable_change_id("feat/x", "abc") == stable_change_id("feat/x", "abc")
+    assert stable_change_id("feat/x", "abc").startswith("chg-")
+    first = stable_change_id("feat/x", "abc")
+    assert stable_change_id("feat/x", "def") != first
+    assert stable_change_id("feat/y", "abc") != first
+    assert stable_change_id(None, "abc") != first
+
+    a = parse_unified_diff(BASIC)
+    b = parse_unified_diff(BASIC)
+    c = parse_unified_diff(load_fixture("single_line.patch"))
+
+    assert isinstance(a.versions[0], Version)
+    assert len(a.versions) == 1
+    assert a.id == b.id
+    assert a.id == f"chg-{a.versions[0].revision}"
+    assert a.files == a.versions[0].files
+    assert a.head_revision == a.versions[0].revision
+    assert a.created_at is None
+    assert c.id != a.id
 
 
 _MALFORMED: list[tuple[str, str]] = [

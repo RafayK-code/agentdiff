@@ -8,7 +8,9 @@ from agentdiff.model.types import (
     Line,
     LineRange,
     Side,
+    Version,
     new_comment_id,
+    stable_change_id,
 )
 from agentdiff.model.validate import CommentValidationError, validate_comment
 
@@ -23,6 +25,8 @@ __all__ = [
     "Line",
     "LineRange",
     "Side",
+    "Version",
     "new_comment_id",
+    "stable_change_id",
     "validate_comment",
 ]

@@ -6,8 +6,7 @@ from pathlib import Path
 
 from tests.diff.conftest import load_fixture
 
-from agentdiff.diff import parse_unified_diff
-from agentdiff.model import Change
+from agentdiff.model import Change, stable_change_id
 from agentdiff.model.types import Side
 from agentdiff.store import StoreError, create_store
 from agentdiff.tui.session import load_shell_state
@@ -91,18 +90,18 @@ def test_load_shell_state_success_round_trips_through_store(tmp_path: Path) -> N
 
     state = load_shell_state(tmp_path, runner=fake)
 
-    expected = parse_unified_diff(BASIC)
+    expected_id = stable_change_id("main", PARENT_SHA)
     assert state.status is ShellStatus.READY
     assert state.branch == "main"
     assert state.commit_title == "Add foo"
-    assert state.change_id == expected.id
+    assert state.change_id == expected_id
     assert state.base_revision == PARENT_SHA
     assert state.head_revision == HEAD_SHA
     assert len(state.files) == 1
 
-    path = tmp_path / ".agentdiff" / f"{expected.id}.jsonl"
+    path = tmp_path / ".agentdiff" / f"{expected_id}.jsonl"
     assert path.exists()
-    stored = create_store(tmp_path).load_change(expected.id)
+    stored = create_store(tmp_path).load_change(expected_id)
     assert stored is not None
     assert stored.branch == "main"
     assert stored.base_revision == PARENT_SHA

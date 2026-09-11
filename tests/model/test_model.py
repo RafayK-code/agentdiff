@@ -109,9 +109,11 @@ def test_hunk_validation(kwargs: dict[str, object], expect_error: bool) -> None:
 
 
 def test_change_defaults_and_side_enum() -> None:
-    change = Change(id="x", files=[])
-    assert change.base_revision is None
+    change = Change(id="x")
+    assert change.files == []
+    assert change.current is None
     assert change.head_revision is None
+    assert change.base_revision is None
     assert change.approval is None
     assert change.created_at is None
 

@@ -12,8 +12,15 @@ from tests.diff.conftest import load_fixture
 from tests.export.conftest import comment_factory
 
 from agentdiff.diff.parse import parse_unified_diff
-from agentdiff.export import SCHEMA_VERSION, export_json
-from agentdiff.model import Change, Comment, CommentState, LineRange, Side
+from agentdiff.export import SCHEMA_VERSION, export_json, export_markdown
+from agentdiff.model import (
+    Change,
+    Comment,
+    CommentState,
+    LineRange,
+    Side,
+    Version,
+)
 
 RE_SEMVER = re.compile(r"\d+\.\d+\.\d+")
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -127,9 +134,11 @@ def test_counting(name: str, expected: dict[str, object], no_context: bool) -> N
 
 
 def test_empty_files_list() -> None:
-    change = Change(id="chg-empty", files=[])
+    change = Change(id="chg-empty")
     parsed = json.loads(export_json(change, []))
     assert parsed["change"]["files"] == []
+    assert parsed["change"]["versions"] == []
+    assert parsed["change"]["current_revision"] is None
     assert parsed["comments"] == []
 
 
@@ -259,25 +268,99 @@ def test_golden_round_trips(approved_change, mixed_comments: list[Comment]) -> N
         assert comment["file"] in paths
 
 
-def test_change_block_chain_fields(
-    approved_change, mixed_comments: list[Comment]
-) -> None:
+def test_change_block_fields(approved_change, mixed_comments: list[Comment]) -> None:
     parsed = json.loads(export_json(approved_change, mixed_comments))["change"]
     assert list(parsed.keys()) == [
         "id",
-        "prev_change",
         "branch",
         "base_revision",
-        "head_revision",
+        "current_revision",
+        "versions",
         "approval",
         "files",
     ]
-    assert parsed["prev_change"] == "chg-00"
     assert parsed["branch"] == "feat/x"
+    assert parsed["base_revision"] == "3f2a1b0"
+    assert parsed["current_revision"] == "a1b2c3d"
+    assert parsed["versions"] == ["9c7d0e1", "a1b2c3d"]
+    assert "prev_change" not in parsed
+    assert "head_revision" not in parsed
 
 
-def test_chain_head_emits_null_chain_fields() -> None:
+def test_patch_import_emits_null_provenance() -> None:
     head_out = export_json(parse_unified_diff(load_fixture("basic.patch")), [])
-    assert json.loads(head_out)["schema_version"] == SCHEMA_VERSION
-    assert '"prev_change": null' in head_out
-    assert '"branch": null' in head_out
+    parsed = json.loads(head_out)
+    assert parsed["schema_version"] == SCHEMA_VERSION
+    assert parsed["change"]["branch"] is None
+    assert parsed["change"]["base_revision"] is None
+    assert parsed["change"]["current_revision"] is not None
+    assert len(parsed["change"]["versions"]) == 1
+
+
+def test_export_json_shape_and_closed() -> None:
+    change = Change(
+        id="chg-s",
+        branch="feat/x",
+        base_revision="base",
+        versions=[
+            Version(
+                revision="rev-1",
+                files=parse_unified_diff(load_fixture("basic.patch")).files,
+            ),
+            Version(
+                revision="rev-2",
+                files=parse_unified_diff(load_fixture("new_file.patch")).files,
+            ),
+        ],
+    )
+    root = comment_factory(id="c-root", revision="rev-2", file="new.txt", range=None)
+    reply = comment_factory(
+        id="c-reply",
+        revision="rev-2",
+        file="new.txt",
+        range=None,
+        in_reply_to="c-root",
+    )
+    closed = comment_factory(
+        id="c-closed",
+        revision="rev-1",
+        file="new.txt",
+        range=None,
+        state=CommentState.CLOSED,
+    )
+    comments = [root, reply, closed]
+
+    default = json.loads(export_json(change, comments))
+    all_ = json.loads(export_json(change, comments, include_closed=True))
+    md = export_markdown(change, comments)
+
+    assert default["schema_version"] == "1.0.0"
+    assert set(default["change"]) == {
+        "id",
+        "branch",
+        "base_revision",
+        "current_revision",
+        "versions",
+        "approval",
+        "files",
+    }
+    assert default["change"]["current_revision"] == "rev-2"
+    assert default["change"]["versions"] == ["rev-1", "rev-2"]
+    assert default["change"]["files"] == [
+        {"path": "new.txt", "additions": 3, "deletions": 0, "old_path": None}
+    ]
+
+    assert [c["id"] for c in default["comments"]] == ["c-root", "c-reply"]
+    for comment in default["comments"]:
+        assert comment["revision"] == "rev-2"
+        assert "thread_id" not in comment
+    assert default["comments"][1]["in_reply_to"] == "c-root"
+    assert default["comments"][0]["in_reply_to"] is None
+
+    assert [c["id"] for c in all_["comments"]] == ["c-root", "c-reply", "c-closed"]
+    closed_block = all_["comments"][2]
+    assert closed_block["state"] == "CLOSED"
+
+    assert "## new.txt" in md
+    assert "## src/foo.py" not in md
+    assert "c-closed" not in md

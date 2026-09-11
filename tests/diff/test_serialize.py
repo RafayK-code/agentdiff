@@ -6,7 +6,7 @@ from tests.diff.test_parse import _WELL_FORMED_FIXTURE_NAMES
 
 from agentdiff.diff.parse import parse_unified_diff
 from agentdiff.diff.serialize import serialize_unified_diff
-from agentdiff.model.types import Change, FileDiff, Hunk, Line
+from agentdiff.model.types import Change, FileDiff, Hunk, Line, Version
 
 
 @pytest.mark.parametrize("name", _WELL_FORMED_FIXTURE_NAMES)
@@ -68,7 +68,12 @@ def test_serialize_recomputes_hunk_counts() -> None:
         lines=[Line(kind="add", old_no=None, new_no=1, text="a")],
     )
     change = Change.model_construct(
-        id="x", files=[FileDiff.model_construct(path="x", hunks=[hunk])]
+        id="x",
+        versions=[
+            Version.model_construct(
+                revision="r", files=[FileDiff.model_construct(path="x", hunks=[hunk])]
+            )
+        ],
     )
     out = serialize_unified_diff(change)
     reparsed = parse_unified_diff(out)

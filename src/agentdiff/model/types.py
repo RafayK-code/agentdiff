@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import datetime
 from enum import Enum
@@ -36,11 +37,12 @@ class LineRange(BaseModel):
 class Comment(BaseModel):
     id: str
     change_id: str
+    revision: str
     file: str
     range: LineRange | None = None
     text: str
     author: str
-    thread_id: str | None = None
+    in_reply_to: str | None = None
     state: CommentState = Field(strict=True)
     drifted: bool = False
     created_at: datetime
@@ -128,12 +130,56 @@ class Approval(BaseModel):
     at: datetime
 
 
-class Change(BaseModel):
-    id: str
-    prev_change: str | None = None
-    branch: str | None = None
-    base_revision: str | None = None
-    head_revision: str | None = None
-    approval: Approval | None = None
+class Version(BaseModel):
+    revision: str
     files: list[FileDiff] = Field(default_factory=list)
     created_at: datetime | None = None
+    # No stored patchset number: `Change.versions` is ordered and append-only,
+    # so the 1-based position IS the patchset number. Consumers that hold the
+    # Change (TUI, export, CLI) render `v{n}` via Change.version_number/version_at.
+    # See A11 for why a stored `revision_num` is not added.
+
+
+def stable_change_id(branch: str | None, base_revision: str | None) -> str:
+    """Stable per review: same (branch, base) -> same id across amends (R3)."""
+    digest = hashlib.sha256(f"{branch}:{base_revision}".encode()).hexdigest()
+    return f"chg-{digest[:16]}"
+
+
+class Change(BaseModel):
+    id: str
+    branch: str | None = None
+    base_revision: str | None = None
+    versions: list[Version] = Field(default_factory=list)
+    approval: Approval | None = None
+    created_at: datetime | None = None
+
+    @property
+    def current(self) -> Version | None:
+        return self.versions[-1] if self.versions else None
+
+    @property
+    def files(self) -> list[FileDiff]:
+        current = self.current
+        return current.files if current is not None else []
+
+    @property
+    def head_revision(self) -> str | None:
+        current = self.current
+        return current.revision if current is not None else None
+
+    def version_for(self, revision: str) -> Version | None:
+        return next((v for v in self.versions if v.revision == revision), None)
+
+    def version_number(self, revision: str) -> int | None:
+        """1-based patchset number (`v{n}`) for display, from list order. (R1)"""
+        for number, version in enumerate(self.versions, start=1):
+            if version.revision == revision:
+                return number
+        return None
+
+    def version_at(self, number: int) -> Version | None:
+        """Version by 1-based patchset number; None when out of range. (R1)"""
+        if 1 <= number <= len(self.versions):
+            return self.versions[number - 1]
+        return None

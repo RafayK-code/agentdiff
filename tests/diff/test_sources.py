@@ -18,6 +18,7 @@ from agentdiff.diff.sources import (
     head_commit_title,
     read_file_at_revision,
 )
+from agentdiff.model import stable_change_id
 
 BASIC = load_fixture("basic.patch")
 NEW_FILE = load_fixture("new_file.patch")
@@ -28,6 +29,9 @@ BINARY = load_fixture("binary.patch")
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 HEAD_SHA = "aaaa0001"
 PARENT_SHA = "bbbb0002"
+BRANCH = "feat/x"
+
+_SYMBOLIC_REF = ("git", "symbolic-ref", "--short", "-q", "HEAD")
 
 
 class FakeGit:
@@ -59,7 +63,7 @@ def _result(
 
 
 def _default_responses(
-    diff_text: str,
+    diff_text: str, *, branch: str = BRANCH
 ) -> dict[tuple[str, ...], subprocess.CompletedProcess[str]]:
     return {
         ("git", "rev-parse", "--verify", "--quiet", "HEAD^{commit}"): _result(
@@ -70,6 +74,7 @@ def _default_responses(
             ("git", "rev-parse", "--verify", "--quiet", f"{HEAD_SHA}~1"),
             stdout=PARENT_SHA,
         ),
+        _SYMBOLIC_REF: _result(_SYMBOLIC_REF, stdout=f"{branch}\n"),
         ("git", "diff", PARENT_SHA, HEAD_SHA): _result(
             ("git", "diff", PARENT_SHA, HEAD_SHA), stdout=diff_text
         ),
@@ -86,14 +91,74 @@ def test_default_range_resolves_shas_and_parses_once(
     expected = parse_unified_diff(BASIC)
     assert change.base_revision == PARENT_SHA
     assert change.head_revision == HEAD_SHA
+    assert change.current.revision == HEAD_SHA
+    assert change.branch == BRANCH
+    assert change.id == stable_change_id(BRANCH, PARENT_SHA)
     assert change.files == expected.files
-    assert change.id == expected.id
+    assert change.versions[0].files == expected.files
     assert fake.calls == [
         ["git", "rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
         ["git", "rev-parse", "--verify", "--quiet", f"{HEAD_SHA}~1"],
+        ["git", "symbolic-ref", "--short", "-q", "HEAD"],
         ["git", "diff", PARENT_SHA, HEAD_SHA],
     ]
     assert capsys.readouterr().err == ""
+
+
+def test_diff_from_git_stamps_provenance() -> None:
+    basic_text = BASIC
+    responses = {
+        (
+            "git",
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "HEAD^{commit}",
+        ): _result(
+            ("git", "rev-parse", "--verify", "--quiet", "HEAD^{commit}"),
+            stdout="head1234",
+        ),
+        (
+            "git",
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "head1234~1",
+        ): _result(
+            ("git", "rev-parse", "--verify", "--quiet", "head1234~1"),
+            stdout="base5678",
+        ),
+        _SYMBOLIC_REF: _result(_SYMBOLIC_REF, stdout="feat/x\n"),
+        ("git", "diff", "base5678", "head1234"): _result(
+            ("git", "diff", "base5678", "head1234"), stdout=basic_text
+        ),
+    }
+    change = diff_from_git(runner=FakeGit(responses))
+
+    assert change.id == stable_change_id("feat/x", "base5678")
+    assert change.id != parse_unified_diff(basic_text).id
+    assert change.branch == "feat/x"
+    assert change.base_revision == "base5678"
+    assert change.head_revision == "head1234"
+    assert change.current.revision == "head1234"
+    assert len(change.versions) == 1
+    assert change.versions[0].files == parse_unified_diff(basic_text).files
+    assert change.created_at is not None
+    assert change.versions[0].created_at is not None
+
+    detached = FakeGit(
+        {
+            **responses,
+            _SYMBOLIC_REF: _result(
+                _SYMBOLIC_REF,
+                returncode=1,
+                stderr="fatal: ref HEAD is not a symbolic ref",
+            ),
+        }
+    )
+    detached_change = diff_from_git(runner=detached)
+    assert detached_change.branch is None
+    assert detached_change.id == stable_change_id(None, "base5678")
 
 
 def test_explicit_base_and_head_resolve_to_shas() -> None:
@@ -113,6 +178,7 @@ def test_explicit_base_and_head_resolve_to_shas() -> None:
                 ("git", "rev-parse", "--verify", "feature-base^{commit}"),
                 stdout="cccc0003",
             ),
+            _SYMBOLIC_REF: _result(_SYMBOLIC_REF, stdout=f"{BRANCH}\n"),
             ("git", "diff", "cccc0003", HEAD_SHA): _result(
                 ("git", "diff", "cccc0003", HEAD_SHA), stdout=BASIC
             ),
@@ -127,6 +193,7 @@ def test_explicit_base_and_head_resolve_to_shas() -> None:
     assert fake.calls == [
         ["git", "rev-parse", "--verify", "--quiet", "feature-tip^{commit}"],
         ["git", "rev-parse", "--verify", "feature-base^{commit}"],
+        ["git", "symbolic-ref", "--short", "-q", "HEAD"],
         ["git", "diff", "cccc0003", HEAD_SHA],
     ]
 
@@ -142,6 +209,7 @@ def test_head_only_defaults_base_to_parent() -> None:
                 ("git", "rev-parse", "--verify", "--quiet", "dddd0004~1"),
                 stdout="eeee0005",
             ),
+            _SYMBOLIC_REF: _result(_SYMBOLIC_REF, stdout=f"{BRANCH}\n"),
             ("git", "diff", "eeee0005", "dddd0004"): _result(
                 ("git", "diff", "eeee0005", "dddd0004"), stdout=BASIC
             ),
@@ -155,6 +223,7 @@ def test_head_only_defaults_base_to_parent() -> None:
     assert fake.calls == [
         ["git", "rev-parse", "--verify", "--quiet", "topic^{commit}"],
         ["git", "rev-parse", "--verify", "--quiet", "dddd0004~1"],
+        ["git", "symbolic-ref", "--short", "-q", "HEAD"],
         ["git", "diff", "eeee0005", "dddd0004"],
     ]
 
@@ -169,6 +238,7 @@ def test_base_only_defaults_head_to_head() -> None:
             ("git", "rev-parse", "--verify", "main^{commit}"): _result(
                 ("git", "rev-parse", "--verify", "main^{commit}"), stdout="0000aaaa"
             ),
+            _SYMBOLIC_REF: _result(_SYMBOLIC_REF, stdout="main\n"),
             ("git", "diff", "0000aaaa", "ffff0006"): _result(
                 ("git", "diff", "0000aaaa", "ffff0006"), stdout=BASIC
             ),
@@ -182,6 +252,7 @@ def test_base_only_defaults_head_to_head() -> None:
     assert fake.calls == [
         ["git", "rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
         ["git", "rev-parse", "--verify", "main^{commit}"],
+        ["git", "symbolic-ref", "--short", "-q", "HEAD"],
         ["git", "diff", "0000aaaa", "ffff0006"],
     ]
 
@@ -201,6 +272,7 @@ def test_root_commit_uses_empty_tree_as_base() -> None:
             ("git", "hash-object", "-t", "tree", "/dev/null"): _result(
                 ("git", "hash-object", "-t", "tree", "/dev/null"), stdout=EMPTY_TREE
             ),
+            _SYMBOLIC_REF: _result(_SYMBOLIC_REF, stdout=f"{BRANCH}\n"),
             ("git", "diff", EMPTY_TREE, HEAD_SHA): _result(
                 ("git", "diff", EMPTY_TREE, HEAD_SHA), stdout=NEW_FILE
             ),
@@ -215,6 +287,7 @@ def test_root_commit_uses_empty_tree_as_base() -> None:
         ["git", "rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
         ["git", "rev-parse", "--verify", "--quiet", f"{HEAD_SHA}~1"],
         ["git", "hash-object", "-t", "tree", "/dev/null"],
+        ["git", "symbolic-ref", "--short", "-q", "HEAD"],
         ["git", "diff", EMPTY_TREE, HEAD_SHA],
     ]
     assert change.files == parse_unified_diff(NEW_FILE).files
@@ -271,9 +344,9 @@ def test_same_range_yields_same_change_id() -> None:
     first = diff_from_git(runner=FakeGit(_default_responses(BASIC)))
     second = diff_from_git(runner=FakeGit(_default_responses(BASIC)))
 
-    expected = parse_unified_diff(BASIC)
     assert first.id == second.id
-    assert first.id == expected.id
+    assert first.id == stable_change_id(BRANCH, PARENT_SHA)
+    assert first.id != parse_unified_diff(BASIC).id
 
 
 def test_range_diff_text_parsed_exactly_once(
@@ -400,7 +473,7 @@ def test_diff_from_patch(kind: str, tmp_path: Path) -> None:
         change = diff_from_patch(patch)
         assert change.files == parse_unified_diff(BASIC).files
         assert change.base_revision is None
-        assert change.head_revision is None
+        assert change.head_revision == parse_unified_diff(BASIC).head_revision
     elif kind == "missing":
         with pytest.raises(FileNotFoundError):
             diff_from_patch(tmp_path / "does-not-exist.patch")

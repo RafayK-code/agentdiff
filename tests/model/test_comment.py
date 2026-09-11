@@ -15,6 +15,7 @@ from agentdiff.model import (
     CommentValidationError,
     LineRange,
     Side,
+    Version,
     new_comment_id,
     validate_comment,
 )
@@ -32,6 +33,7 @@ def _comment_kwargs() -> dict[str, object]:
     return {
         "id": "c-a",
         "change_id": "chg-x",
+        "revision": "rev-1",
         "file": "src/foo.py",
         "range": LineRange(side=Side.NEW, start=1, end=3),
         "text": "rename this",
@@ -52,6 +54,7 @@ def _comment_on(
     return Comment(
         id="c",
         change_id=change.id,
+        revision=change.head_revision or "",
         file=file,
         range=line_range,
         text=text,
@@ -60,6 +63,30 @@ def _comment_on(
         created_at=datetime(2024, 1, 1),
         updated_at=datetime(2024, 1, 1),
     )
+
+
+def test_change_and_comment_field_migration() -> None:
+    assert set(Change.model_fields) == {
+        "id",
+        "branch",
+        "base_revision",
+        "versions",
+        "approval",
+        "created_at",
+    }
+    assert "revision" in Comment.model_fields
+    assert "in_reply_to" in Comment.model_fields
+    assert "thread_id" not in Comment.model_fields
+
+    root = Comment(**_comment_kwargs())
+    reply = Comment(**{**_comment_kwargs(), "in_reply_to": "c-parent"})
+    assert root.in_reply_to is None
+    assert reply.in_reply_to == "c-parent"
+
+    omitted = _comment_kwargs()
+    omitted.pop("revision")
+    with pytest.raises(ValidationError):
+        Comment(**omitted)
 
 
 def test_comment_state() -> None:
@@ -127,7 +154,7 @@ def test_comment_constructs() -> None:
     comment = Comment(**_comment_kwargs())
     assert comment.range == LineRange(side=Side.NEW, start=1, end=3)
     assert comment.range is not None
-    assert comment.thread_id is None
+    assert comment.in_reply_to is None
     assert comment.anchor_snapshot == []
 
     file_scoped = _comment_kwargs()
@@ -136,10 +163,10 @@ def test_comment_constructs() -> None:
     assert comment.range is None
     assert comment.anchor_snapshot == []
 
-    with_thread = Comment(**{**_comment_kwargs(), "thread_id": "th-1"})
-    without_thread = Comment(**_comment_kwargs())
-    assert with_thread.thread_id == "th-1"
-    assert without_thread.thread_id is None
+    with_reply = Comment(**{**_comment_kwargs(), "in_reply_to": "c-1"})
+    without_reply = Comment(**_comment_kwargs())
+    assert with_reply.in_reply_to == "c-1"
+    assert without_reply.in_reply_to is None
 
     kwargs_a = _comment_kwargs()
     kwargs_a.pop("range")
@@ -167,6 +194,7 @@ def test_comment_rejects_invalid_fields() -> None:
     for field in [
         "id",
         "change_id",
+        "revision",
         "file",
         "text",
         "author",
@@ -183,6 +211,7 @@ def test_comment_rejects_invalid_fields() -> None:
         Comment(
             id="c",
             change_id="chg",
+            revision="rev-1",
             file="f",
             text="t",
             author="a",
@@ -275,11 +304,69 @@ def test_validate_rejects_invalid_comments(
         validate_comment(comment, change)
 
 
+def test_validate_against_own_revision() -> None:
+    change = Change(
+        id="chg-v",
+        versions=[
+            Version(
+                revision="rev-1",
+                files=parse_unified_diff(load_fixture("basic.patch")).files,
+            ),
+            Version(
+                revision="rev-2",
+                files=parse_unified_diff(load_fixture("new_file.patch")).files,
+            ),
+        ],
+    )
+
+    def comment(revision: str, file: str, line_range: LineRange | None) -> Comment:
+        return Comment(
+            id="c",
+            change_id=change.id,
+            revision=revision,
+            file=file,
+            range=line_range,
+            text="t",
+            author="a",
+            state=CommentState.ACTIVE,
+            created_at=datetime(2024, 1, 1),
+            updated_at=datetime(2024, 1, 1),
+        )
+
+    assert validate_comment(comment("rev-1", "src/foo.py", None), change) is None
+    assert (
+        validate_comment(
+            comment("rev-1", "src/foo.py", LineRange(side=Side.NEW, start=3, end=3)),
+            change,
+        )
+        is None
+    )
+
+    with pytest.raises(CommentValidationError) as exc_file:
+        validate_comment(comment("rev-1", "new.txt", None), change)
+    assert "new.txt" in str(exc_file.value)
+
+    with pytest.raises(CommentValidationError):
+        validate_comment(
+            comment("rev-2", "src/foo.py", LineRange(side=Side.NEW, start=3, end=3)),
+            change,
+        )
+    with pytest.raises(CommentValidationError):
+        validate_comment(
+            comment("rev-1", "src/foo.py", LineRange(side=Side.NEW, start=3, end=4)),
+            change,
+        )
+    with pytest.raises(CommentValidationError) as exc_rev:
+        validate_comment(comment("ghost", "src/foo.py", None), change)
+    assert "ghost" in str(exc_rev.value)
+
+
 def test_validate_ignores_lifecycle() -> None:
     def comment(file: str, line_range: LineRange | None) -> Comment:
         return Comment(
             id="c-closed",
             change_id=BASIC.id,
+            revision=BASIC.head_revision or "",
             file=file,
             range=line_range,
             text="t",

@@ -29,8 +29,10 @@ class JsonlStore:
         self._ensure_dir()
 
     def save_change(self, change: Change) -> None:
-        self._validate_chain(change)
-        self._mutate(change.id, lambda _old, comments: (change, comments))
+        self._mutate(
+            change.id,
+            lambda old, comments: self._merge(old, comments, change),
+        )
 
     def load_change(self, change_id: str) -> Change | None:
         path = self._path_for(change_id)
@@ -74,9 +76,9 @@ class JsonlStore:
         self,
         change_id: str,
         *,
+        revision: str | None = None,
         file: str | None = None,
         state: CommentState | None = None,
-        thread_id: str | None = None,
         include_closed: bool = False,
     ) -> list[Comment]:
         path = self._path_for(change_id)
@@ -87,13 +89,11 @@ class JsonlStore:
         for comment in comments:
             if not include_closed and comment.state is CommentState.CLOSED:
                 continue
+            if revision is not None and comment.revision != revision:
+                continue
             if file is not None and comment.file != file:
                 continue
             if state is not None and comment.state is not state:
-                continue
-            if thread_id is not None and not (
-                comment.thread_id == thread_id or comment.id == thread_id
-            ):
                 continue
             result.append(comment)
         return result
@@ -106,46 +106,6 @@ class JsonlStore:
 
     def _ensure_dir(self) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)
-
-    def _validate_chain(self, change: Change) -> None:
-        """Chain-integrity check on ingest (R6a): a referenced prev_change
-        must exist, be on the same branch, and not create a cycle."""
-        if change.prev_change is None:
-            return
-        prev = self.load_change(change.prev_change)
-        if prev is None:
-            raise StoreError(f"unknown prev_change {change.prev_change!r}")
-        if prev.branch != change.branch:
-            raise StoreError(
-                f"prev_change {change.prev_change!r} is not on branch {change.branch!r}"
-            )
-        seen = {change.id}
-        cur: Change | None = change
-        while cur is not None and cur.prev_change is not None:
-            if cur.prev_change in seen:
-                raise StoreError(f"chain cycle at {change.id!r}")
-            seen.add(cur.prev_change)
-            cur = self.load_change(cur.prev_change)
-
-    def _is_locked(self, change: Change) -> bool:
-        """A change is locked iff a same-branch change references it via
-        prev_change (§5.1). A change with branch=None has no chain and is
-        never locked (A8)."""
-        if change.branch is None:
-            return False
-        return any(
-            other.id != change.id and other.prev_change == change.id
-            for other in self.list_changes(branch=change.branch)
-        )
-
-    def _guard_writable(self, change: Change | None, change_id: str) -> None:
-        if change is None:
-            raise StoreError(f"unknown change {change_id!r}")
-        if self._is_locked(change):
-            raise StoreError(
-                f"change {change.id!r} is locked (not the tip of branch "
-                f"{change.branch!r})"
-            )
 
     def _path_for(self, change_id: str) -> Path:
         return self._dir / f"{change_id}.jsonl"
@@ -201,24 +161,55 @@ class JsonlStore:
             new_change, new_comments = fn(change, comments)
             self._write_file(path, new_change, new_comments)
 
+    def _merge(
+        self,
+        old: Change | None,
+        comments: list[Comment],
+        incoming: Change,
+    ) -> tuple[Change, list[Comment]]:
+        """Append only versions whose revision is new; auto-resolve superseded
+        non-closed comments. Re-ingesting a known revision is a no-op. (R4, R6)"""
+        if old is None:
+            return incoming, comments
+        known = {version.revision for version in old.versions}
+        appended = [v for v in incoming.versions if v.revision not in known]
+        if not appended:
+            return old, comments
+        versions = [*old.versions, *appended]
+        current_revision = versions[-1].revision
+        now = self._now_utc()
+        resolved = [
+            c
+            if c.state is not CommentState.ACTIVE or c.revision == current_revision
+            else c.model_copy(
+                update={"state": CommentState.RESOLVED, "updated_at": now}
+            )
+            for c in comments
+        ]
+        return old.model_copy(update={"versions": versions}), resolved
+
     def _add(
         self,
         change: Change | None,
         comments: list[Comment],
         comment: Comment,
     ) -> tuple[Change, list[Comment]]:
-        self._guard_writable(change, comment.change_id)
+        if change is None:
+            raise StoreError(f"unknown change {comment.change_id!r}")
         try:
             validate_comment(comment, change)
         except CommentValidationError as exc:
             raise StoreError(str(exc)) from exc
         if any(c.id == comment.id for c in comments):
             raise StoreError(f"duplicate comment id {comment.id!r}")
-        if comment.thread_id is not None and not any(
-            c.thread_id == comment.thread_id or c.id == comment.thread_id
-            for c in comments
-        ):
-            raise StoreError(f"unknown thread {comment.thread_id!r}")
+        if comment.in_reply_to is not None:
+            if not any(c.id == comment.in_reply_to for c in comments):
+                raise StoreError(f"unknown comment {comment.in_reply_to!r}")
+            if comment.revision != change.head_revision:
+                raise StoreError(
+                    f"reply must target the current revision "
+                    f"{change.head_revision!r}, not {comment.revision!r}"
+                )
         return change, comments + [comment]
 
     def _update(
@@ -227,12 +218,16 @@ class JsonlStore:
         comments: list[Comment],
         comment: Comment,
     ) -> tuple[Change, list[Comment]]:
-        self._guard_writable(change, comment.change_id)
+        if change is None:
+            raise StoreError(f"unknown change {comment.change_id!r}")
         index = next((i for i, c in enumerate(comments) if c.id == comment.id), None)
         if index is None:
             raise StoreError(f"unknown comment id {comment.id!r}")
-        if comments[index].change_id != comment.change_id:
+        stored = comments[index]
+        if stored.change_id != comment.change_id:
             raise StoreError(f"comment {comment.id!r} cannot move to another change")
+        if stored.revision != comment.revision:
+            raise StoreError(f"comment {comment.id!r} cannot move to another revision")
         updated = comment.model_copy(update={"updated_at": self._now_utc()})
         new_comments = list(comments)
         new_comments[index] = updated

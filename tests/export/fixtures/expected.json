@@ -2,10 +2,13 @@
   "schema_version": "1.0.0",
   "change": {
     "id": "chg-01",
-    "prev_change": "chg-00",
     "branch": "feat/x",
     "base_revision": "3f2a1b0",
-    "head_revision": "9c7d0e1",
+    "current_revision": "a1b2c3d",
+    "versions": [
+      "9c7d0e1",
+      "a1b2c3d"
+    ],
     "approval": {
       "status": "APPROVED",
       "message": "LGTM, ship it",
@@ -24,6 +27,7 @@
   "comments": [
     {
       "id": "c-new",
+      "revision": "a1b2c3d",
       "file": "src/foo.py",
       "side": "NEW",
       "lines": [
@@ -32,13 +36,14 @@
       ],
       "text": "Fix this",
       "author": "alice",
-      "thread_id": null,
+      "in_reply_to": null,
       "state": "ACTIVE",
       "drifted": false,
       "created_at": "2024-01-01T14:05:00Z"
     },
     {
       "id": "c-old-resolved",
+      "revision": "9c7d0e1",
       "file": "src/foo.py",
       "side": "OLD",
       "lines": [
@@ -47,49 +52,53 @@
       ],
       "text": "Old-side note",
       "author": "bob",
-      "thread_id": null,
+      "in_reply_to": null,
       "state": "RESOLVED",
       "drifted": false,
       "created_at": "2024-01-01T14:05:00Z"
     },
     {
       "id": "c-file-level",
+      "revision": "a1b2c3d",
       "file": "src/foo.py",
       "side": null,
       "lines": null,
       "text": "File-level note",
       "author": "carol",
-      "thread_id": null,
+      "in_reply_to": null,
       "state": "ACTIVE",
       "drifted": false,
       "created_at": "2024-01-01T14:05:00Z"
     },
     {
       "id": "c-drifted",
+      "revision": "a1b2c3d",
       "file": "src/foo.py",
       "side": null,
       "lines": null,
       "text": "This anchor drifted",
       "author": "dave",
-      "thread_id": null,
+      "in_reply_to": null,
       "state": "ACTIVE",
       "drifted": true,
       "created_at": "2024-01-01T14:05:00Z"
     },
     {
       "id": "c-closed",
+      "revision": "a1b2c3d",
       "file": "src/foo.py",
       "side": null,
       "lines": null,
       "text": "Closed note",
       "author": "grace",
-      "thread_id": null,
+      "in_reply_to": null,
       "state": "CLOSED",
       "drifted": false,
       "created_at": "2024-01-01T14:05:00Z"
     },
     {
       "id": "c-thread-1",
+      "revision": "a1b2c3d",
       "file": "src/foo.py",
       "side": "NEW",
       "lines": [
@@ -98,13 +107,14 @@
       ],
       "text": "Threaded reply one",
       "author": "eve",
-      "thread_id": "t-1",
+      "in_reply_to": null,
       "state": "ACTIVE",
       "drifted": false,
       "created_at": "2024-01-01T14:05:00Z"
     },
     {
       "id": "c-thread-2",
+      "revision": "a1b2c3d",
       "file": "src/foo.py",
       "side": "NEW",
       "lines": [
@@ -113,7 +123,7 @@
       ],
       "text": "Threaded reply two",
       "author": "frank",
-      "thread_id": "t-1",
+      "in_reply_to": "c-thread-1",
       "state": "ACTIVE",
       "drifted": false,
       "created_at": "2024-01-01T14:05:00Z"

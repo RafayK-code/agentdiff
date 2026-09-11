@@ -22,11 +22,17 @@ def _max_line(file: FileDiff, side: Side) -> int:
 
 
 def validate_comment(comment: Comment, change: Change) -> None:
-    """Raise CommentValidationError if the comment does not fit the change. (R6)"""
-    file = next((f for f in change.files if f.path == comment.file), None)
+    """Raise CommentValidationError if the comment does not fit the change. (R8)"""
+    version = change.version_for(comment.revision)
+    if version is None:
+        raise CommentValidationError(
+            f"revision {comment.revision!r} is not a version of change {change.id!r}"
+        )
+    file = next((f for f in version.files if f.path == comment.file), None)
     if file is None:
         raise CommentValidationError(
-            f"file {comment.file!r} is not in change {change.id!r}"
+            f"file {comment.file!r} is not in revision {comment.revision!r} "
+            f"of change {change.id!r}"
         )
     if comment.range is None:
         return

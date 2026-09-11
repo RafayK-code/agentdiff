@@ -7,7 +7,7 @@ from enum import Enum
 
 import pydantic
 
-from agentdiff.model.types import Change, FileDiff, Hunk, Line
+from agentdiff.model.types import Change, FileDiff, Hunk, Line, Version
 
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 _DIFF_GIT_RE = re.compile(r"^diff --git ")
@@ -44,9 +44,8 @@ class DiffParseError(ValueError):
         super().__init__(f"{message}{detail}")
 
 
-def _derive_id(text: str) -> str:
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    return f"chg-{digest[:16]}"
+def _content_revision(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 def _normalize_path(path: str) -> str | None:
@@ -318,7 +317,7 @@ class _Parser:
             return
         raise DiffParseError("unexpected line in hunk body", lineno)
 
-    def parse(self) -> Change:
+    def parse(self) -> list[FileDiff]:
         lines = self.text.replace("\r\n", "\n").splitlines()
         for lineno, line in enumerate(lines):
             if self.state is _ParseState.SEEK:
@@ -336,9 +335,18 @@ class _Parser:
             self.files.append(_close_file(self.cur, len(lines)))
         if not self.files:
             raise DiffParseError("no diff file headers", 0)
-        return Change(id=_derive_id(self.text), files=self.files)
+        return self.files
 
 
 def parse_unified_diff(text: str) -> Change:
-    """Parse a full unified-diff changeset into a Change. Pure, I/O-free. (R1, R6)"""
-    return _Parser(text).parse()
+    """Parse a full unified-diff changeset into a provisional one-version Change.
+
+    Pure and I/O-free; the content-derived revision/id are deterministic for
+    identical text (R3). Sources overwrite the provenance. (R1)
+    """
+    files = _Parser(text).parse()
+    revision = _content_revision(text)
+    return Change(
+        id=f"chg-{revision}",
+        versions=[Version(revision=revision, files=files)],
+    )

@@ -1,44 +1,35 @@
 from __future__ import annotations
 
-import json
+from tests.diff.conftest import load_fixture
 
-from agentdiff.model import Change
+from agentdiff.diff.parse import parse_unified_diff
+from agentdiff.model import Change, Version
 
 
-def test_change_chain_fields_roundtrip() -> None:
-    change = Change(
-        id="chg-01",
-        prev_change="chg-00",
-        branch="feat/x",
-        base_revision="abc",
-        head_revision="def",
+def test_change_versions_and_accessors() -> None:
+    v1 = Version(
+        revision="rev-1", files=parse_unified_diff(load_fixture("basic.patch")).files
     )
-    raw = change.model_dump_json()
-    loaded = Change.model_validate_json(raw)
-    assert loaded == change
-    assert loaded is not change
-    assert json.loads(raw)["prev_change"] == "chg-00"
-    assert json.loads(raw)["branch"] == "feat/x"
-
-
-def test_change_chain_fields_default_to_none() -> None:
-    bare = Change(id="chg-x", files=[])
-    assert bare.prev_change is None
-    assert bare.branch is None
-
-
-def test_change_legacy_json_without_chain_fields_loads() -> None:
-    change = Change(
-        id="chg-01",
-        prev_change="chg-00",
-        branch="feat/x",
-        base_revision="abc",
-        head_revision="def",
+    v2 = Version(
+        revision="rev-2", files=parse_unified_diff(load_fixture("new_file.patch")).files
     )
-    raw = json.loads(change.model_dump_json())
-    legacy = json.dumps(
-        {k: v for k, v in raw.items() if k not in ("prev_change", "branch")}
-    )
-    loaded = Change.model_validate_json(legacy)
-    assert loaded.prev_change is None
-    assert loaded.branch is None
+    change = Change(id="chg-s", versions=[v1, v2])
+    empty = Change(id="chg-e")
+
+    assert change.current is v2
+    assert change.files == v2.files
+    assert change.head_revision == "rev-2"
+    assert change.version_for("rev-1") is v1
+    assert change.version_for("nope") is None
+    assert change.version_number("rev-1") == 1
+    assert change.version_number("rev-2") == 2
+    assert change.version_number("nope") is None
+    assert change.version_at(1) is v1
+    assert change.version_at(2) is v2
+    assert change.version_at(0) is None
+    assert change.version_at(3) is None
+
+    assert empty.current is None
+    assert empty.files == []
+    assert empty.head_revision is None
+    assert empty.version_at(1) is None

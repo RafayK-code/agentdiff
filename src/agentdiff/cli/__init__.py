@@ -31,7 +31,8 @@ from pathlib import Path
 from typing import Protocol, TextIO
 
 from agentdiff import __version__
-from agentdiff.cli import changes, export
+from agentdiff.cli import add, changes, close, export, reopen, resolve
+from agentdiff.cli import list as list_command
 from agentdiff.cli.common import store_for
 from agentdiff.cli.errors import CliError
 from agentdiff.store import Store, StoreError
@@ -45,7 +46,15 @@ class _Command(Protocol):
     def run(self, args: argparse.Namespace, store: Store, out: TextIO) -> int: ...
 
 
-_COMMANDS: dict[str, _Command] = {"changes": changes, "export": export}
+_COMMANDS: dict[str, _Command] = {
+    "changes": changes,
+    "export": export,
+    "list": list_command,
+    "add": add,
+    "resolve": resolve,
+    "reopen": reopen,
+    "close": close,
+}
 
 
 def _run_bare(
@@ -89,6 +98,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     changes.add_parser(subparsers)
     export.add_parser(subparsers)
+    list_command.add_parser(subparsers)
+    add.add_parser(subparsers)
+    resolve.add_parser(subparsers)
+    reopen.add_parser(subparsers)
+    close.add_parser(subparsers)
     return parser
 
 

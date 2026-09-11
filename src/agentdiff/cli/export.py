@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 from typing import TextIO
 
-from agentdiff.cli.chains import branch_tip
+from agentdiff.cli.chains import latest_change
 from agentdiff.cli.common import add_root_option
 from agentdiff.cli.errors import CliError
 from agentdiff.export import export_json, export_markdown
@@ -20,8 +20,10 @@ def add_parser(
         "export", help="export a change's comments (§7 JSON or markdown)"
     )
     add_root_option(p)
-    p.add_argument("--change", metavar="ID", help="specific patchset to export")
-    p.add_argument("--branch", metavar="NAME", help="export this branch's tip")
+    p.add_argument("--change", metavar="ID", help="specific change to export")
+    p.add_argument(
+        "--branch", metavar="NAME", help="export this branch's latest change"
+    )
     p.add_argument(
         "--format",
         default="markdown",
@@ -56,9 +58,9 @@ def run(args: argparse.Namespace, store: Store, out: TextIO) -> int:
         branch_changes = store.list_changes(branch=args.branch)
         if not branch_changes:
             raise CliError(f"unknown branch {args.branch!r}")
-        change = branch_tip(branch_changes)
+        change = latest_change(branch_changes)
         if change is None:
-            raise CliError(f"branch {args.branch!r} has no tip")
+            raise CliError(f"branch {args.branch!r} has no changes")
     comments = store.list_comments(change.id, include_closed=True)
     text = (
         export_json(change, comments, include_closed=args.include_closed)

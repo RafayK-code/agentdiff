@@ -33,16 +33,17 @@ class StoreError(RuntimeError):
 
 @runtime_checkable
 class Store(Protocol):
-    """Narrow persistence interface so backends are swappable (R1, D3).
+    """Narrow persistence interface so backends are swappable (R10, D3).
 
-    Lock contract (R6a, §5.1): a change that is not its branch's tip is
-    locked. ``add_comment`` and ``update_comment`` (which also covers replies
-    and resolve/unresolve/close) raise ``StoreError`` when the target change is
-    locked. Reads (``load_change``/``get_comment``/``list_comments``) are
-    unaffected — a locked patchset stays readable.
+    ``save_change`` is the ingest/append point: it merges incoming versions into
+    the stored change (append-only, idempotent for a known ``revision``) and
+    auto-``RESOLVED``s superseded non-closed comments (R4, R6). There is no
+    version lock — older versions are read-only history.
 
-    ``list_comments`` hides ``CLOSED`` comments unless ``include_closed=True``;
-    ``include_closed`` is the sole gate (R5).
+    A comment's ``range`` is validated against its own ``revision``'s version;
+    a reply (``in_reply_to`` set) must target the change's current version (R7,
+    R8). ``list_comments`` filters by ``revision``/``file``/``state`` and hides
+    ``CLOSED`` comments unless ``include_closed=True`` (R11).
     """
 
     def init(self) -> None: ...
@@ -52,9 +53,9 @@ class Store(Protocol):
     def load_change(self, change_id: str) -> Change | None: ...
 
     def list_changes(self, branch: str | None = None) -> list[Change]:
-        """All stored changes, or one branch's chain when branch is given.
+        """All stored changes, or one branch's when branch is given.
         ``branch=None`` means no filter (every change, across all branches).
-        (R3)"""
+        (R10)"""
         ...
 
     def add_comment(self, comment: Comment) -> None: ...
@@ -67,9 +68,9 @@ class Store(Protocol):
         self,
         change_id: str,
         *,
+        revision: str | None = None,
         file: str | None = None,
         state: CommentState | None = None,
-        thread_id: str | None = None,
         include_closed: bool = False,
     ) -> list[Comment]: ...
 
