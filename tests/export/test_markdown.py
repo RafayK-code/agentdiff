@@ -67,13 +67,13 @@ def test_markdown_comment_formatting() -> None:
             id="c-2", file="a.txt", author="bob", state=CommentState.RESOLVED
         ),
         comment_factory(
-            id="c-3", file="a.txt", author="bob", state=CommentState.DRIFTED
+            id="c-3", file="a.txt", author="bob", state=CommentState.CLOSED
         ),
     ]
-    out = export_markdown(change, comments)
+    out = export_markdown(change, comments, include_closed=True)
     assert "[bob, ACTIVE]" in out
     assert "[bob, RESOLVED]" in out
-    assert "[bob, DRIFTED]" in out
+    assert "[bob, CLOSED]" in out
 
     c2 = comment_factory(id="c-2", file="a.txt", text="second")
     c1 = comment_factory(id="c-1", file="a.txt", text="first")
@@ -86,3 +86,18 @@ def test_markdown_comment_formatting() -> None:
     assert "## orphan.py" in out
     assert out.index("## a.txt") < out.index("## orphan.py")
     assert "c-o" in out
+
+
+def test_export_markdown_omits_closed_by_default() -> None:
+    change = Change(id="chg-01", files=[FileDiff(path="src/foo.py")])
+    comments = [
+        comment_factory(id="c-a", file="src/foo.py"),
+        comment_factory(id="c-c", file="src/foo.py", state=CommentState.CLOSED),
+    ]
+    md_default = export_markdown(change, comments)
+    md_all = export_markdown(change, comments, include_closed=True)
+    assert "c-a:" in md_default
+    assert "c-c:" not in md_default
+    assert "c-a:" in md_all
+    assert "c-c:" in md_all
+    assert md_all.rstrip().splitlines()[-1].endswith("[alice, CLOSED]")

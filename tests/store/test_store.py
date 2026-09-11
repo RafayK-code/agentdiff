@@ -9,7 +9,7 @@ from shutil import rmtree
 import pytest
 from pydantic import ValidationError
 from tests.diff.conftest import load_fixture
-from tests.store.conftest import comment_factory
+from tests.store.conftest import CanonicalStore, comment_factory
 
 from agentdiff.diff.parse import parse_unified_diff
 from agentdiff.model import (
@@ -307,25 +307,57 @@ def test_update_semantics(tmp_path: Path, change: Change) -> None:
 
     store = create_store(tmp_path / "drifted")
     store.save_change(change)
-    store.add_comment(
+    c1 = comment_factory(
+        change,
+        id="c-1",
+        state=CommentState.ACTIVE,
+        range=LineRange(side=Side.NEW, start=1, end=1),
+        created_at=old,
+        updated_at=old,
+    )
+    store.add_comment(c1)
+    store.update_comment(
+        comment_factory(
+            change,
+            id="c-1",
+            state=CommentState.RESOLVED,
+            range=LineRange(side=Side.NEW, start=1, end=1),
+            created_at=old,
+            updated_at=old,
+        )
+    )
+    resolved = store.get_comment("c-1")
+    assert resolved.state is CommentState.RESOLVED
+    assert resolved.updated_at > old
+    store.update_comment(
         comment_factory(
             change,
             id="c-1",
             state=CommentState.ACTIVE,
             range=LineRange(side=Side.NEW, start=1, end=1),
+            created_at=old,
+            updated_at=old,
         )
     )
-    store.update_comment(comment_factory(change, id="c-1", state=CommentState.RESOLVED))
-    assert store.get_comment("c-1").state is CommentState.RESOLVED
+    reopened = store.get_comment("c-1")
+    assert reopened.state is CommentState.ACTIVE
+    assert reopened.updated_at > resolved.updated_at
     store.update_comment(
         comment_factory(
             change,
             id="c-1",
-            state=CommentState.DRIFTED,
+            state=CommentState.ACTIVE,
+            drifted=True,
             range=LineRange(side=Side.NEW, start=99, end=99),
+            created_at=old,
+            updated_at=old,
         )
     )
-    assert store.get_comment("c-1").range == LineRange(side=Side.NEW, start=99, end=99)
+    drifted = store.get_comment("c-1")
+    assert drifted.state is CommentState.ACTIVE
+    assert drifted.drifted is True
+    assert drifted.updated_at > reopened.updated_at
+    assert drifted.range == LineRange(side=Side.NEW, start=99, end=99)
 
 
 def test_list_comments_filters(tmp_path: Path, change: Change) -> None:
@@ -372,11 +404,19 @@ def test_list_comments_filters(tmp_path: Path, change: Change) -> None:
     store.save_change(change)
     c_a = comment_factory(change, id="c-a", state=CommentState.ACTIVE)
     c_r = comment_factory(change, id="c-r", state=CommentState.RESOLVED)
+    c_c = comment_factory(change, id="c-c", state=CommentState.CLOSED)
     store.add_comment(c_a)
     store.add_comment(c_r)
+    store.add_comment(c_c)
+    assert store.list_comments(change.id) == [c_a, c_r]
+    assert store.list_comments(change.id, include_closed=True) == [c_a, c_r, c_c]
+    assert store.list_comments(change.id, file="src/foo.py") == [c_a, c_r]
     assert store.list_comments(change.id, state=CommentState.ACTIVE) == [c_a]
     assert store.list_comments(change.id, state=CommentState.RESOLVED) == [c_r]
-    assert store.list_comments(change.id, state=CommentState.DRIFTED) == []
+    assert store.list_comments(change.id, state=CommentState.CLOSED) == []
+    assert store.list_comments(
+        change.id, state=CommentState.CLOSED, include_closed=True
+    ) == [c_c]
     assert store.list_comments(
         change.id, file="src/foo.py", state=CommentState.ACTIVE, thread_id=None
     ) == [c_a]
@@ -388,7 +428,7 @@ def test_list_comments_filters(tmp_path: Path, change: Change) -> None:
     )
     assert (
         store.list_comments(
-            change.id, file="src/foo.py", state=CommentState.DRIFTED, thread_id=None
+            change.id, file="src/foo.py", state=CommentState.CLOSED, thread_id=None
         )
         == []
     )
@@ -402,6 +442,34 @@ def test_list_comments_filters(tmp_path: Path, change: Change) -> None:
         c_a,
         c_r,
     ]
+
+
+def test_close_comment_sets_closed_retains_and_bumps(
+    tmp_path: Path, change: Change
+) -> None:
+    store = create_store(tmp_path / "close")
+    store.save_change(change)
+    t0 = datetime(2000, 1, 1, 12, 0, tzinfo=timezone.utc)
+    store.add_comment(comment_factory(change, id="c-1", created_at=t0, updated_at=t0))
+    closed = store.close_comment("c-1")
+    assert closed.id == "c-1"
+    assert closed.state is CommentState.CLOSED
+    assert store.get_comment("c-1").state is CommentState.CLOSED
+    assert store.list_comments(change.id) == []
+    assert store.list_comments(change.id, include_closed=True) == [closed]
+    assert closed.updated_at > t0
+    assert closed.created_at == t0
+
+
+def test_close_comment_errors_and_lock_guard(
+    tmp_path: Path, canonical_store: CanonicalStore
+) -> None:
+    fresh = create_store(tmp_path / "ghost")
+    with pytest.raises(StoreError):
+        fresh.close_comment("c-ghost")
+    with pytest.raises(StoreError):
+        canonical_store.store.close_comment("c-1")
+    assert canonical_store.store.get_comment("c-1").state is CommentState.ACTIVE
 
 
 def test_storeerror_carries_line_and_lineno(

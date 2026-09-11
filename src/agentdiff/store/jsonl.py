@@ -77,6 +77,7 @@ class JsonlStore:
         file: str | None = None,
         state: CommentState | None = None,
         thread_id: str | None = None,
+        include_closed: bool = False,
     ) -> list[Comment]:
         path = self._path_for(change_id)
         if not path.exists():
@@ -84,6 +85,8 @@ class JsonlStore:
         comments = self._read_file(path)[1]
         result = []
         for comment in comments:
+            if not include_closed and comment.state is CommentState.CLOSED:
+                continue
             if file is not None and comment.file != file:
                 continue
             if state is not None and comment.state is not state:
@@ -94,6 +97,12 @@ class JsonlStore:
                 continue
             result.append(comment)
         return result
+
+    def close_comment(self, comment_id: str) -> Comment:
+        comment = self.get_comment(comment_id)
+        closed = comment.model_copy(update={"state": CommentState.CLOSED})
+        self.update_comment(closed)
+        return self.get_comment(comment_id)
 
     def _ensure_dir(self) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)

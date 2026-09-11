@@ -72,8 +72,20 @@
       "text": "This anchor drifted",
       "author": "dave",
       "thread_id": null,
-      "state": "DRIFTED",
+      "state": "ACTIVE",
       "drifted": true,
+      "created_at": "2024-01-01T14:05:00Z"
+    },
+    {
+      "id": "c-closed",
+      "file": "src/foo.py",
+      "side": null,
+      "lines": null,
+      "text": "Closed note",
+      "author": "grace",
+      "thread_id": null,
+      "state": "CLOSED",
+      "drifted": false,
       "created_at": "2024-01-01T14:05:00Z"
     },
     {

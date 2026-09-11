@@ -86,16 +86,23 @@ def _comment_block(comment: Comment) -> dict[str, object]:
         "author": comment.author,
         "thread_id": comment.thread_id,
         "state": comment.state.value,
-        "drifted": comment.state is CommentState.DRIFTED,  # derived (R3)
+        "drifted": comment.drifted,
         "created_at": _iso8601(comment.created_at),
     }
 
 
-def export_json(change: Change, comments: list[Comment]) -> str:
-    """Serialize a change + its comments to the §7 JSON contract (R1)."""
+def export_json(
+    change: Change, comments: list[Comment], *, include_closed: bool = False
+) -> str:
+    """Serialize a change + its comments to the §7 JSON contract (R1).
+
+    ``CLOSED`` comments are omitted unless ``include_closed=True`` (R7)."""
+    visible = [
+        c for c in comments if include_closed or c.state is not CommentState.CLOSED
+    ]
     doc = {
         "schema_version": SCHEMA_VERSION,
         "change": _change_block(change),
-        "comments": [_comment_block(c) for c in comments],
+        "comments": [_comment_block(c) for c in visible],
     }
     return json.dumps(doc, indent=2, ensure_ascii=True) + "\n"

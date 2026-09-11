@@ -22,6 +22,7 @@ def comment_factory(
     text: str = "t",
     author: str = "alice",
     state: CommentState = CommentState.ACTIVE,
+    drifted: bool = False,
     thread_id: str | None = None,
     created_at: datetime = CREATED_AT,
 ) -> Comment:
@@ -35,6 +36,7 @@ def comment_factory(
         text=text,
         author=author,
         state=state,
+        drifted=drifted,
         thread_id=thread_id,
         created_at=created_at,
         updated_at=created_at,
@@ -64,7 +66,16 @@ def _mixed_comments() -> list[Comment]:
             range=None,
             text="This anchor drifted",
             author="dave",
-            state=CommentState.DRIFTED,
+            state=CommentState.ACTIVE,
+            drifted=True,
+        ),
+        comment_factory(
+            id="c-closed",
+            range=None,
+            text="Closed note",
+            author="grace",
+            state=CommentState.CLOSED,
+            drifted=False,
         ),
         comment_factory(
             id="c-thread-1",

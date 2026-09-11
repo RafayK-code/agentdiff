@@ -61,6 +61,40 @@ def test_export_branch_yields_tip_only(
         assert comment["id"] not in ("c-1", "c-2")
 
 
+def test_export_hides_closed_both_formats(
+    capsys: pytest.CaptureFixture[str], canonical_store: CanonicalStore
+) -> None:
+    root = canonical_store.root
+
+    def run(argv: list[str]) -> str:
+        rc = main([*argv, "--root", str(root)])
+        captured = capsys.readouterr()
+        assert rc == 0
+        assert captured.err == ""
+        return captured.out
+
+    default_json = run(["export", "--change", "chg-bbb", "--format", "json"])
+    assert [c["id"] for c in json.loads(default_json)["comments"]] == ["c-3"]
+
+    all_json = run(
+        ["export", "--change", "chg-bbb", "--format", "json", "--include-closed"]
+    )
+    doc = json.loads(all_json)
+    assert [c["id"] for c in doc["comments"]] == ["c-3", "c-4"]
+    closed = next(c for c in doc["comments"] if c["id"] == "c-4")
+    assert closed["state"] == "CLOSED"
+
+    default_md = run(["export", "--change", "chg-bbb"])
+    assert "c-4:" not in default_md
+    all_md = run(["export", "--change", "chg-bbb", "--include-closed"])
+    assert "c-4:" in all_md
+
+    branch_json = run(
+        ["export", "--branch", "feat/x", "--format", "json", "--include-closed"]
+    )
+    assert [c["id"] for c in json.loads(branch_json)["comments"]] == ["c-3", "c-4"]
+
+
 def test_export_error_contract(
     capsys: pytest.CaptureFixture[str], canonical_store: CanonicalStore
 ) -> None:

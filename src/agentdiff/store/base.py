@@ -37,9 +37,12 @@ class Store(Protocol):
 
     Lock contract (R6a, §5.1): a change that is not its branch's tip is
     locked. ``add_comment`` and ``update_comment`` (which also covers replies
-    and resolve/unresolve) raise ``StoreError`` when the target change is
+    and resolve/unresolve/close) raise ``StoreError`` when the target change is
     locked. Reads (``load_change``/``get_comment``/``list_comments``) are
     unaffected — a locked patchset stays readable.
+
+    ``list_comments`` hides ``CLOSED`` comments unless ``include_closed=True``;
+    ``include_closed`` is the sole gate (R5).
     """
 
     def init(self) -> None: ...
@@ -67,4 +70,7 @@ class Store(Protocol):
         file: str | None = None,
         state: CommentState | None = None,
         thread_id: str | None = None,
+        include_closed: bool = False,
     ) -> list[Comment]: ...
+
+    def close_comment(self, comment_id: str) -> Comment: ...

@@ -25,6 +25,7 @@ def comment_factory(
     text: str = "t",
     author: str = "alice",
     state: CommentState = CommentState.ACTIVE,
+    drifted: bool = False,
     thread_id: str | None = None,
     created_at: datetime = _DEFAULT_AT,
     updated_at: datetime = _DEFAULT_AT,
@@ -39,6 +40,7 @@ def comment_factory(
         text=text,
         author=author,
         state=state,
+        drifted=drifted,
         thread_id=thread_id,
         created_at=created_at,
         updated_at=updated_at,
@@ -122,6 +124,7 @@ def build_canonical_store(root: Path) -> CanonicalStore:
     store.add_comment(comment_factory(chg_aaa, id="c-2", state=CommentState.RESOLVED))
     store.save_change(chg_bbb)
     store.add_comment(comment_factory(chg_bbb, id="c-3", state=CommentState.ACTIVE))
+    store.add_comment(comment_factory(chg_bbb, id="c-4", state=CommentState.CLOSED))
     store.save_change(chg_mmm)
     store.add_comment(comment_factory(chg_mmm, id="c-m", state=CommentState.ACTIVE))
     store.save_change(chg_ppp)

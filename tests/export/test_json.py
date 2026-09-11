@@ -23,11 +23,10 @@ def test_api_signature() -> None:
     import agentdiff.export as export
 
     sig = inspect.signature(export.export_json)
-    assert list(sig.parameters) == ["change", "comments"]
-    assert all(
-        p.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
-        for p in sig.parameters.values()
-    )
+    assert list(sig.parameters) == ["change", "comments", "include_closed"]
+    assert sig.parameters["change"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    assert sig.parameters["comments"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    assert sig.parameters["include_closed"].kind is inspect.Parameter.KEYWORD_ONLY
     assert {"SCHEMA_VERSION", "export_json", "export_markdown"} <= set(export.__all__)
 
 
@@ -163,11 +162,44 @@ def test_file_level_comment_nulls(approved_change) -> None:
         assert key in exported
 
 
-def test_drifted_derived_not_set(approved_change) -> None:
-    comment = comment_factory(id="c-active", state=CommentState.ACTIVE)
-    object.__setattr__(comment, "drifted", True)
-    exported = json.loads(export_json(approved_change, [comment]))["comments"][0]
-    assert exported["drifted"] is False
+def test_export_json_real_drifted(approved_change) -> None:
+    comments = [
+        comment_factory(id="c-active-drift", state=CommentState.ACTIVE, drifted=True),
+        comment_factory(
+            id="c-resolved-drift", state=CommentState.RESOLVED, drifted=True
+        ),
+        comment_factory(id="c-active-clean", state=CommentState.ACTIVE, drifted=False),
+    ]
+    doc = json.loads(export_json(approved_change, comments))
+    by_id = {c["id"]: c for c in doc["comments"]}
+    assert by_id["c-active-drift"]["drifted"] is True
+    assert by_id["c-active-drift"]["state"] == "ACTIVE"
+    assert by_id["c-resolved-drift"]["drifted"] is True
+    assert by_id["c-resolved-drift"]["state"] == "RESOLVED"
+    assert by_id["c-active-clean"]["drifted"] is False
+    assert by_id["c-active-clean"]["state"] == "ACTIVE"
+
+
+def test_export_json_omits_closed_by_default(approved_change) -> None:
+    comments = [
+        comment_factory(id="c-a", state=CommentState.ACTIVE),
+        comment_factory(id="c-c", state=CommentState.CLOSED),
+    ]
+    out_default = export_json(approved_change, comments)
+    out_all = export_json(approved_change, comments, include_closed=True)
+    assert [c["id"] for c in json.loads(out_default)["comments"]] == ["c-a"]
+    doc_all = json.loads(out_all)
+    assert [c["id"] for c in doc_all["comments"]] == ["c-a", "c-c"]
+    closed = doc_all["comments"][1]
+    assert closed["state"] == "CLOSED"
+    assert closed["drifted"] is False
+    assert json.loads(out_default)["schema_version"] == SCHEMA_VERSION
+    assert doc_all["schema_version"] == SCHEMA_VERSION
+
+
+def test_schema_version_unchanged(approved_change) -> None:
+    assert SCHEMA_VERSION == "1.0.0"
+    assert json.loads(export_json(approved_change, []))["schema_version"] == "1.0.0"
 
 
 def test_comment_order_preserved(
@@ -215,11 +247,11 @@ def test_unicode_escaped_ascii(approved_change) -> None:
 
 def test_golden_exact_match(approved_change, mixed_comments: list[Comment]) -> None:
     expected = (FIXTURES_DIR / "expected.json").read_text(encoding="utf-8")
-    assert export_json(approved_change, mixed_comments) == expected
+    assert export_json(approved_change, mixed_comments, include_closed=True) == expected
 
 
 def test_golden_round_trips(approved_change, mixed_comments: list[Comment]) -> None:
-    doc = json.loads(export_json(approved_change, mixed_comments))
+    doc = json.loads(export_json(approved_change, mixed_comments, include_closed=True))
     assert len(doc["change"]["files"]) == len(approved_change.files)
     assert len(doc["comments"]) == len(mixed_comments)
     paths = {f["path"] for f in doc["change"]["files"]}

@@ -59,6 +59,27 @@ def test_changes_listing_and_branch_filter(
         assert needle not in out
 
 
+def test_changes_hides_closed(
+    capsys: pytest.CaptureFixture[str],
+    canonical_store: CanonicalStore,
+) -> None:
+    root = canonical_store.root
+
+    rc = main(["changes", "--root", str(root)])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.err == ""
+    default_line = next(ln for ln in captured.out.splitlines() if "chg-bbb" in ln)
+    assert "1 comment" in default_line
+
+    rc = main(["changes", "--root", str(root), "--include-closed"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.err == ""
+    closed_line = next(ln for ln in captured.out.splitlines() if "chg-bbb" in ln)
+    assert "2 comments" in closed_line
+
+
 def test_changes_empty_inputs(
     capsys: pytest.CaptureFixture[str],
     canonical_store: CanonicalStore,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agentdiff.model import Change, Comment
+from agentdiff.model import Change, Comment, CommentState
 
 
 def _location(comment: Comment) -> str:
@@ -18,10 +18,17 @@ def _bullet(comment: Comment) -> str:
     )
 
 
-def export_markdown(change: Change, comments: list[Comment]) -> str:
-    """Human-readable, per-file sections with location-annotated bullets. (R4)"""
+def export_markdown(
+    change: Change, comments: list[Comment], *, include_closed: bool = False
+) -> str:
+    """Human-readable, per-file sections with location-annotated bullets.
+
+    ``CLOSED`` comments are omitted unless ``include_closed=True`` (R7)."""
+    visible = [
+        c for c in comments if include_closed or c.state is not CommentState.CLOSED
+    ]
     by_file: dict[str, list[Comment]] = {}
-    for comment in comments:
+    for comment in visible:
         by_file.setdefault(comment.file, []).append(comment)
 
     sections: list[str] = [f"# Change {change.id}", ""]

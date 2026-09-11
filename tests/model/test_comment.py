@@ -65,12 +65,15 @@ def _comment_on(
 def test_comment_state() -> None:
     assert CommentState.ACTIVE.value == "ACTIVE"
     assert CommentState.RESOLVED.value == "RESOLVED"
-    assert CommentState.DRIFTED.value == "DRIFTED"
-    assert [m.value for m in CommentState] == ["ACTIVE", "RESOLVED", "DRIFTED"]
-    for member in (CommentState.ACTIVE, CommentState.RESOLVED, CommentState.DRIFTED):
+    assert CommentState.CLOSED.value == "CLOSED"
+    assert [m.value for m in CommentState] == ["ACTIVE", "RESOLVED", "CLOSED"]
+    for member in (CommentState.ACTIVE, CommentState.RESOLVED, CommentState.CLOSED):
         assert isinstance(member, str)
         assert isinstance(member, CommentState)
+    assert CommentState("CLOSED").value == "CLOSED"
     assert CommentState.ACTIVE == "ACTIVE"
+    with pytest.raises(ValueError):
+        CommentState("DRIFTED")
     with pytest.raises(ValueError):
         CommentState("PENDING")
     with pytest.raises(ValueError):
@@ -152,6 +155,12 @@ def test_comment_constructs() -> None:
         **{**_comment_kwargs(), "anchor_snapshot": ["line1", "line2", "line3"]}
     )
     assert supplied.anchor_snapshot == ["line1", "line2", "line3"]
+
+    assert Comment(**_comment_kwargs()).drifted is False
+    for state in (CommentState.ACTIVE, CommentState.RESOLVED, CommentState.CLOSED):
+        drifted = Comment(**{**_comment_kwargs(), "state": state, "drifted": True})
+        assert drifted.drifted is True
+        assert drifted.state is state
 
 
 def test_comment_rejects_invalid_fields() -> None:
@@ -264,6 +273,31 @@ def test_validate_rejects_invalid_comments(
     comment = _comment_on(change, file, line_range)
     with pytest.raises(CommentValidationError):
         validate_comment(comment, change)
+
+
+def test_validate_ignores_lifecycle() -> None:
+    def comment(file: str, line_range: LineRange | None) -> Comment:
+        return Comment(
+            id="c-closed",
+            change_id=BASIC.id,
+            file=file,
+            range=line_range,
+            text="t",
+            author="a",
+            state=CommentState.CLOSED,
+            drifted=True,
+            created_at=datetime(2024, 1, 1),
+            updated_at=datetime(2024, 1, 1),
+        )
+
+    assert validate_comment(comment("src/foo.py", None), BASIC) is None
+    with pytest.raises(CommentValidationError) as exc:
+        validate_comment(comment("nope.py", None), BASIC)
+    assert "nope.py" in str(exc.value)
+    with pytest.raises(CommentValidationError):
+        validate_comment(
+            comment("src/foo.py", LineRange(side=Side.NEW, start=3, end=4)), BASIC
+        )
 
 
 def test_validate_error_is_typed_and_informative() -> None:

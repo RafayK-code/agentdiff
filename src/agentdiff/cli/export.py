@@ -30,6 +30,11 @@ def add_parser(
     p.add_argument(
         "--out", type=Path, metavar="FILE", help="write to FILE instead of stdout"
     )
+    p.add_argument(
+        "--include-closed",
+        action="store_true",
+        help="include CLOSED comments (hidden by default)",
+    )
     p.set_defaults(func=run)
 
 
@@ -54,11 +59,11 @@ def run(args: argparse.Namespace, store: Store, out: TextIO) -> int:
         change = branch_tip(branch_changes)
         if change is None:
             raise CliError(f"branch {args.branch!r} has no tip")
-    comments = store.list_comments(change.id)
+    comments = store.list_comments(change.id, include_closed=True)
     text = (
-        export_json(change, comments)
+        export_json(change, comments, include_closed=args.include_closed)
         if args.format == "json"
-        else export_markdown(change, comments)
+        else export_markdown(change, comments, include_closed=args.include_closed)
     )
     if args.out is not None:
         args.out.write_text(text, encoding="utf-8")

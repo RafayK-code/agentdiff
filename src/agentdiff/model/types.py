@@ -16,7 +16,7 @@ class Side(str, Enum):
 class CommentState(str, Enum):
     ACTIVE = "ACTIVE"
     RESOLVED = "RESOLVED"
-    DRIFTED = "DRIFTED"
+    CLOSED = "CLOSED"
 
 
 class LineRange(BaseModel):
@@ -42,6 +42,7 @@ class Comment(BaseModel):
     author: str
     thread_id: str | None = None
     state: CommentState = Field(strict=True)
+    drifted: bool = False
     created_at: datetime
     updated_at: datetime
     anchor_snapshot: list[str] = Field(default_factory=list)

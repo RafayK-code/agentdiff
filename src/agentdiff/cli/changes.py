@@ -21,6 +21,11 @@ def add_parser(
         metavar="NAME",
         help="only show this branch's chain (default: all branches)",
     )
+    p.add_argument(
+        "--include-closed",
+        action="store_true",
+        help="count CLOSED comments too (hidden by default)",
+    )
     p.set_defaults(func=run)
 
 
@@ -58,7 +63,9 @@ def run(args: argparse.Namespace, store: Store, out: TextIO) -> int:
         tip = branch_tip(groups[branch])
         tip_id = tip.id if tip is not None else None
         for position, change in enumerate(ordered, start=1):
-            count = len(store.list_comments(change.id))
+            count = len(
+                store.list_comments(change.id, include_closed=args.include_closed)
+            )
             out.write(_change_line(position, change, count, change.id == tip_id))
             out.write("\n")
     return 0
