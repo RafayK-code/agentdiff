@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 from enum import Enum
 
-from agentdiff.model.types import Change, FileDiff
+from agentdiff.model.types import Change, FileDiff, Side
 
 
 class ShellStatus(str, Enum):
@@ -30,6 +31,12 @@ class FileEntry:
 
 
 @dataclass(frozen=True)
+class FileContent:
+    side: Side
+    lines: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ShellState:
     status: ShellStatus
     change: Change | None = None
@@ -39,15 +46,9 @@ class ShellState:
     base_revision: str | None = None
     head_revision: str | None = None
     files: tuple[FileEntry, ...] = ()
-    previews: tuple[str, ...] = ()
+    contents: tuple[FileContent | None, ...] = ()
     selected: int = 0
     message: str | None = None
-
-    @property
-    def current_preview(self) -> str:
-        if self.previews and 0 <= self.selected < len(self.previews):
-            return self.previews[self.selected]
-        return self.message or ""
 
 
 def file_status(file: FileDiff) -> FileStatus:
@@ -78,25 +79,12 @@ def summarize_file(file: FileDiff) -> FileEntry:
     )
 
 
-def render_diff_placeholder(file: FileDiff) -> str:
-    entry = summarize_file(file)
-    lines = [
-        f"{entry.path} ({entry.status.value}, +{entry.additions} -{entry.deletions})"
-    ]
-    if file.is_binary:
-        lines.append("(binary file)")
-    elif not file.hunks:
-        lines.append("(no hunks)")
-    else:
-        for hunk in file.hunks:
-            lines.append(
-                f"@@ -{hunk.old_start},{hunk.old_count} "
-                f"+{hunk.new_start},{hunk.new_count} @@"
-            )
-    return "\n".join(lines)
-
-
-def build_shell_state(change: Change, commit_title: str | None = None) -> ShellState:
+def build_shell_state(
+    change: Change,
+    *,
+    contents: Sequence[FileContent | None] = (),
+    commit_title: str | None = None,
+) -> ShellState:
     return ShellState(
         status=ShellStatus.READY,
         change=change,
@@ -106,7 +94,7 @@ def build_shell_state(change: Change, commit_title: str | None = None) -> ShellS
         base_revision=change.base_revision,
         head_revision=change.head_revision,
         files=tuple(summarize_file(file) for file in change.files),
-        previews=tuple(render_diff_placeholder(file) for file in change.files),
+        contents=tuple(contents),
         selected=0,
     )
 
@@ -126,22 +114,10 @@ def move_selection(index: int, count: int, delta: int) -> int:
 
 
 def select_file(state: ShellState, delta: int) -> ShellState:
-    selected = move_selection(state.selected, len(state.previews), delta)
+    selected = move_selection(state.selected, len(state.files), delta)
     if selected == state.selected:
         return state
-    return ShellState(
-        status=state.status,
-        change=state.change,
-        branch=state.branch,
-        commit_title=state.commit_title,
-        change_id=state.change_id,
-        base_revision=state.base_revision,
-        head_revision=state.head_revision,
-        files=state.files,
-        previews=state.previews,
-        selected=selected,
-        message=state.message,
-    )
+    return replace(state, selected=selected)
 
 
 def format_header(state: ShellState) -> str:

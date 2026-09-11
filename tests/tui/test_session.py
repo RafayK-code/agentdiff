@@ -8,11 +8,14 @@ from tests.diff.conftest import load_fixture
 
 from agentdiff.diff import parse_unified_diff
 from agentdiff.model import Change
+from agentdiff.model.types import Side
 from agentdiff.store import StoreError, create_store
 from agentdiff.tui.session import load_shell_state
 from agentdiff.tui.state import ShellStatus
 
 BASIC = load_fixture("basic.patch")
+DELETED = load_fixture("deleted_file.patch")
+BINARY = load_fixture("binary.patch")
 HEAD_SHA = "aaaa0001"
 PARENT_SHA = "bbbb0002"
 
@@ -32,10 +35,12 @@ class FakeGit:
     ) -> None:
         self._responses = responses
         self._raise_oserror = raise_oserror
+        self.calls: list[list[str]] = []
 
     def __call__(self, args: Sequence[str]) -> subprocess.CompletedProcess[str]:
         if self._raise_oserror:
             raise OSError("git not found")
+        self.calls.append(list(args))
         key = tuple(args)
         if key not in self._responses:
             raise AssertionError(f"unexpected git argv: {list(args)}")
@@ -68,6 +73,10 @@ def _success_responses(diff_text: str = BASIC) -> dict:
         ),
         ("git", "log", "-1", "--format=%s", "HEAD"): _result(
             ("git", "log", "-1", "--format=%s", "HEAD"), stdout="Add foo\n"
+        ),
+        ("git", "show", f"{HEAD_SHA}:src/foo.py"): _result(
+            ("git", "show", f"{HEAD_SHA}:src/foo.py"),
+            stdout="ctx1\nadded\nctx2\n",
         ),
     }
 
@@ -148,3 +157,26 @@ def test_load_shell_state_store_error_is_mapped(tmp_path: Path) -> None:
     assert state.status is ShellStatus.ERROR
     assert (state.message or "").startswith("store error")
     assert "disk full" in (state.message or "")
+
+
+def test_session_fetches_content_from_the_correct_revision_side(
+    tmp_path: Path,
+) -> None:
+    responses = _success_responses(BASIC + DELETED + BINARY)
+    responses[("git", "show", f"{PARENT_SHA}:old.txt")] = _result(
+        ("git", "show", f"{PARENT_SHA}:old.txt"), stdout="line1\nline2\nline3\n"
+    )
+    fake = FakeGit(responses)
+
+    state = load_shell_state(tmp_path, runner=fake)
+
+    assert len(state.contents) == len(state.files)
+    first = state.contents[0]
+    assert first is not None and first.side is Side.NEW
+    second = state.contents[1]
+    assert second is not None and second.side is Side.OLD
+    assert state.contents[2] is None
+    assert [call for call in fake.calls if call[:2] == ["git", "show"]] == [
+        ["git", "show", f"{HEAD_SHA}:src/foo.py"],
+        ["git", "show", f"{PARENT_SHA}:old.txt"],
+    ]

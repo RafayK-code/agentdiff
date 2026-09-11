@@ -16,6 +16,7 @@ from agentdiff.diff.sources import (
     diff_from_git,
     diff_from_patch,
     head_commit_title,
+    read_file_at_revision,
 )
 
 BASIC = load_fixture("basic.patch")
@@ -344,6 +345,36 @@ def test_current_branch_returns_name_or_none() -> None:
 
     assert current_branch(runner=attached) == "feature/x"
     assert current_branch(runner=detached) is None
+
+
+def test_read_file_at_revision_invokes_show_rev_colon_path() -> None:
+    show_ok = ("git", "show", "HEAD:src/foo.py")
+    show_missing = ("git", "show", "HEAD:gone.txt")
+    fake = FakeGit(
+        {
+            show_ok: _result(show_ok, stdout="line1\nline2\n"),
+            show_missing: _result(
+                show_missing,
+                returncode=128,
+                stderr="fatal: path 'gone.txt' does not exist",
+            ),
+        }
+    )
+
+    first = read_file_at_revision("HEAD", "src/foo.py", runner=fake)
+    second = read_file_at_revision("HEAD", "gone.txt", runner=fake)
+
+    assert first == "line1\nline2\n"
+    assert second is None
+    assert fake.calls == [list(show_ok), list(show_missing)]
+
+
+def test_read_file_at_revision_propagates_oserror() -> None:
+    def runner(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        raise OSError("git not found")
+
+    with pytest.raises(OSError):
+        read_file_at_revision("HEAD", "src/foo.py", runner=runner)
 
 
 def test_head_commit_title_returns_subject_or_none() -> None:

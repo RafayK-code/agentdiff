@@ -10,9 +10,43 @@ from agentdiff.diff import (
     current_branch,
     diff_from_git,
     head_commit_title,
+    read_file_at_revision,
 )
+from agentdiff.model.types import Change, FileDiff, Side
 from agentdiff.store import Store, StoreError, create_store
-from agentdiff.tui.state import ShellState, build_shell_state, empty_state, error_state
+from agentdiff.tui.state import (
+    FileContent,
+    ShellState,
+    build_shell_state,
+    empty_state,
+    error_state,
+)
+
+
+def _load_content(
+    file: FileDiff,
+    change: Change,
+    *,
+    runner: CommandRunner | None,
+    cwd: Path,
+) -> FileContent | None:
+    if file.is_binary or not file.hunks:
+        return None
+    if file.old_mode is not None and file.new_mode is None:
+        revision = change.base_revision
+        side = Side.OLD
+    else:
+        revision = change.head_revision
+        side = Side.NEW
+    if revision is None:
+        return None
+    try:
+        text = read_file_at_revision(revision, file.path, runner=runner, cwd=cwd)
+    except OSError:
+        return None
+    if text is None:
+        return None
+    return FileContent(side=side, lines=tuple(text.splitlines()))
 
 
 def load_shell_state(
@@ -37,4 +71,7 @@ def load_shell_state(
         (store if store is not None else create_store(root)).save_change(change)
     except StoreError as exc:
         return error_state(f"store error: {exc}")
-    return build_shell_state(change, commit_title=title)
+    contents = tuple(
+        _load_content(file, change, runner=runner, cwd=root) for file in change.files
+    )
+    return build_shell_state(change, contents=contents, commit_title=title)

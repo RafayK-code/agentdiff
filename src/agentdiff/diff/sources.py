@@ -122,6 +122,26 @@ def head_commit_title(
     return title or None
 
 
+def read_file_at_revision(
+    revision: str,
+    path: str,
+    *,
+    runner: CommandRunner | None = None,
+    cwd: str | PathLike[str] | None = None,
+) -> str | None:
+    """File text at revision via `git show <rev>:<path>`.
+
+    Read-only (side-effect-free); injectable-runner pattern like the other
+    sources. A nonzero exit (path absent at revision) returns None; it does not
+    raise. OSError from the runner propagates and is mapped by the caller.
+    """
+    run = runner if runner is not None else _default_runner(cwd)
+    proc = run(["git", "show", f"{revision}:{path}"])
+    if proc.returncode != 0:
+        return None
+    return proc.stdout
+
+
 def diff_from_patch(path: str | PathLike[str]) -> Change:
     """Patch source (R4): read a unified-diff .patch file and parse it.
 
