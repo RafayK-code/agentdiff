@@ -13,6 +13,8 @@ from agentdiff.tui.render import (
     expand_all_view,
     expand_view,
     intra_line_spans,
+    line_index,
+    line_number,
     make_diff_view,
     next_hunk,
     prev_hunk,
@@ -122,6 +124,28 @@ def test_build_rows_pairs_del_add_and_layout_emits_unified_gutters() -> None:
         added.columns[0].text,
     ) == (CellKind.ADD, (None, 2), "added")
     assert (ctx2.columns[0].gutters, ctx2.columns[0].text) == ((3, 3), "ctx2")
+
+
+def test_line_index_and_line_number_map_unified_coordinates() -> None:
+    file = parse_unified_diff(load_fixture("basic.patch")).files[0]
+    rendered = render_view(
+        make_diff_view(
+            file,
+            header="[modified] src/foo.py",
+            content=FileContent(side=Side.NEW, lines=("ctx1", "added", "ctx2")),
+        )
+    )
+
+    assert line_index(rendered, Side.NEW) == {1: 2, 2: 4, 3: 5}
+    assert line_index(rendered, Side.OLD) == {1: 2, 2: 3, 3: 5}
+    assert line_number(rendered.lines[2], Side.NEW) == 1
+    assert line_number(rendered.lines[2], Side.OLD) == 1
+    assert line_number(rendered.lines[3], Side.NEW) is None
+    assert line_number(rendered.lines[3], Side.OLD) == 2
+    assert line_number(rendered.lines[4], Side.NEW) == 2
+    assert line_number(rendered.lines[4], Side.OLD) is None
+    assert line_number(rendered.lines[0], Side.NEW) is None
+    assert line_number(rendered.lines[1], Side.NEW) is None
 
 
 def test_binary_and_no_content_files_render_a_note() -> None:

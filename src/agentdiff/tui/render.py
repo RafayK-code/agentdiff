@@ -28,6 +28,7 @@ class RowKind(str, Enum):
     CHANGE = "change"
     SKIP = "skip"
     NOTE = "note"
+    COMMENT = "comment"
 
 
 @dataclass(frozen=True)
@@ -322,6 +323,8 @@ def _gap_context_row(view: DiffView, gap: ContextGap, offset: int) -> DiffRow:
 
 
 def _gap_rows(view: DiffView, gap_index: int) -> list[DiffRow]:
+    if not 0 <= gap_index < len(view.gaps):
+        return []
     gap = view.gaps[gap_index]
     if gap.count <= 0:
         return []
@@ -475,3 +478,24 @@ def expand_view(
 def expand_all_view(view: DiffView) -> DiffView:
     expansion = tuple(GapExpansion(top=gap.count) for gap in view.gaps)
     return view if expansion == view.expansion else replace(view, expansion=expansion)
+
+
+def line_number(line: DisplayLine, side: Side) -> int | None:
+    """The model line number a unified display line carries on `side`. (R4)"""
+    index = 0 if side is Side.OLD else 1
+    for column in line.columns:
+        if index < len(column.gutters):
+            number = column.gutters[index]
+            if number is not None:
+                return number
+    return None
+
+
+def line_index(rendered: RenderedDiff, side: Side) -> dict[int, int]:
+    """First display-line index for each model line number on `side`. (R3/R4)"""
+    result: dict[int, int] = {}
+    for index, line in enumerate(rendered.lines):
+        number = line_number(line, side)
+        if number is not None and number not in result:
+            result[number] = index
+    return result

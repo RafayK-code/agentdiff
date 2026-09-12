@@ -12,7 +12,7 @@ from agentdiff.diff import (
     head_commit_title,
     read_file_at_revision,
 )
-from agentdiff.model.types import Change, FileDiff, Side
+from agentdiff.model.types import Change, Comment, FileDiff, Side
 from agentdiff.store import Store, StoreError, create_store
 from agentdiff.tui.state import (
     FileContent,
@@ -49,6 +49,11 @@ def _load_content(
     return FileContent(side=side, lines=tuple(text.splitlines()))
 
 
+def load_comments(store: Store, change_id: str) -> tuple[Comment, ...]:
+    """Load a change's comments, including CLOSED, in stored order. (R2, R10)"""
+    return tuple(store.list_comments(change_id, include_closed=True))
+
+
 def load_shell_state(
     root: Path,
     *,
@@ -67,11 +72,15 @@ def load_shell_state(
 
     change.branch = current_branch(runner=runner, cwd=root)
     title = head_commit_title(runner=runner, cwd=root)
+    active_store = store if store is not None else create_store(root)
     try:
-        (store if store is not None else create_store(root)).save_change(change)
+        active_store.save_change(change)
+        comments = load_comments(active_store, change.id)
     except StoreError as exc:
         return error_state(f"store error: {exc}")
     contents = tuple(
         _load_content(file, change, runner=runner, cwd=root) for file in change.files
     )
-    return build_shell_state(change, contents=contents, commit_title=title)
+    return build_shell_state(
+        change, contents=contents, comments=comments, commit_title=title
+    )

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from tests.diff.conftest import load_fixture
+from tests.tui.conftest import comment_factory, make_version
 
 from agentdiff.cli import main
 from agentdiff.diff.parse import parse_unified_diff
@@ -71,16 +72,27 @@ def test_cli_write_commands(capsys: pytest.CaptureFixture[str], tmp_path: Path) 
     captured = capsys.readouterr()
     assert rc == 0
     assert captured.err == ""
-    assert store.get_comment(added_id).state is CommentState.RESOLVED
+    # resolving is a comment: the original is untouched and a RESOLVED reply
+    # is appended, exactly like the TUI path (one shared core function).
+    assert store.get_comment(added_id).state is CommentState.ACTIVE
+    resolved_reply = next(
+        c for c in store.list_comments("chg-s") if c.in_reply_to == added_id
+    )
+    assert resolved_reply.state is CommentState.RESOLVED
+    assert resolved_reply.text == "resolved"
+    assert captured.out.strip() == resolved_reply.id
 
     rc = main(["reopen", added_id, "--root", str(root)])
     captured = capsys.readouterr()
     assert rc == 0
     assert captured.err == ""
-    reply = next(c for c in store.list_comments("chg-s") if c.in_reply_to == added_id)
+    reply = next(
+        c
+        for c in store.list_comments("chg-s")
+        if c.in_reply_to == added_id and c.state is CommentState.ACTIVE
+    )
     assert reply.revision == "rev-1"
-    assert reply.state is CommentState.ACTIVE
-    assert store.get_comment(added_id).state is CommentState.RESOLVED
+    assert store.get_comment(added_id).state is CommentState.ACTIVE
     reply_id = reply.id
 
     rc = main(["close", reply_id, "--root", str(root)])
@@ -90,6 +102,51 @@ def test_cli_write_commands(capsys: pytest.CaptureFixture[str], tmp_path: Path) 
     assert store.get_comment(reply_id).state is CommentState.CLOSED
     assert reply_id not in [c.id for c in store.list_comments("chg-s")]
     assert reply_id in [c.id for c in store.list_comments("chg-s", include_closed=True)]
+
+
+def test_cli_close_closes_whole_thread(tmp_path: Path) -> None:
+    root_dir = tmp_path / "store"
+    store = create_store(root_dir)
+    store.save_change(
+        Change(id="chg-s", versions=[make_version("rev-1", "basic.patch")])
+    )
+    root = comment_factory(
+        "c-root",
+        change_id="chg-s",
+        revision="rev-1",
+        range=LineRange(side=Side.NEW, start=2, end=2),
+        in_reply_to=None,
+    )
+    reply = comment_factory(
+        "c-reply",
+        change_id="chg-s",
+        revision="rev-1",
+        range=LineRange(side=Side.NEW, start=2, end=2),
+        in_reply_to="c-root",
+    )
+    other = comment_factory(
+        "c-other",
+        change_id="chg-s",
+        revision="rev-1",
+        range=LineRange(side=Side.NEW, start=1, end=1),
+        in_reply_to=None,
+    )
+    store.add_comment(root)
+    store.add_comment(reply)
+    store.add_comment(other)
+
+    rc = main(["close", "c-root", "--root", str(root_dir)])
+
+    assert rc == 0
+    assert store.get_comment("c-root").state is CommentState.CLOSED
+    assert store.get_comment("c-reply").state is CommentState.CLOSED
+    assert store.get_comment("c-other").state is CommentState.ACTIVE
+    assert [c.id for c in store.list_comments("chg-s")] == ["c-other"]
+    assert {c.id for c in store.list_comments("chg-s", include_closed=True)} == {
+        "c-root",
+        "c-reply",
+        "c-other",
+    }
 
 
 def test_cli_read_surface(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:

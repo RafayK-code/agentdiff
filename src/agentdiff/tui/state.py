@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
 
-from agentdiff.model.types import Change, FileDiff, Side
+from agentdiff.model.types import Change, Comment, FileDiff, Side, Version
 
 
 class ShellStatus(str, Enum):
@@ -48,6 +48,8 @@ class ShellState:
     files: tuple[FileEntry, ...] = ()
     contents: tuple[FileContent | None, ...] = ()
     selected: int = 0
+    version_index: int = 0
+    comments: tuple[Comment, ...] = ()
     message: str | None = None
 
 
@@ -79,12 +81,21 @@ def summarize_file(file: FileDiff) -> FileEntry:
     )
 
 
+def _summarize_version(change: Change, version_index: int) -> tuple[FileEntry, ...]:
+    if not change.versions:
+        return ()
+    index = max(0, min(version_index, len(change.versions) - 1))
+    return tuple(summarize_file(file) for file in change.versions[index].files)
+
+
 def build_shell_state(
     change: Change,
     *,
     contents: Sequence[FileContent | None] = (),
+    comments: Sequence[Comment] = (),
     commit_title: str | None = None,
 ) -> ShellState:
+    version_index = max(0, len(change.versions) - 1)
     return ShellState(
         status=ShellStatus.READY,
         change=change,
@@ -93,8 +104,40 @@ def build_shell_state(
         change_id=change.id,
         base_revision=change.base_revision,
         head_revision=change.head_revision,
-        files=tuple(summarize_file(file) for file in change.files),
+        files=_summarize_version(change, version_index),
         contents=tuple(contents),
+        selected=0,
+        version_index=version_index,
+        comments=tuple(comments),
+    )
+
+
+def selected_version(state: ShellState) -> Version | None:
+    change = state.change
+    if change is None or not change.versions:
+        return None
+    index = max(0, min(state.version_index, len(change.versions) - 1))
+    return change.versions[index]
+
+
+def is_current_version(state: ShellState) -> bool:
+    change = state.change
+    if change is None or not change.versions:
+        return False
+    return state.version_index >= len(change.versions) - 1
+
+
+def select_version(state: ShellState, delta: int) -> ShellState:
+    change = state.change
+    if change is None or not change.versions:
+        return state
+    index = max(0, min(state.version_index + delta, len(change.versions) - 1))
+    if index == state.version_index:
+        return state
+    return replace(
+        state,
+        version_index=index,
+        files=_summarize_version(change, index),
         selected=0,
     )
 
@@ -122,7 +165,15 @@ def select_file(state: ShellState, delta: int) -> ShellState:
 
 def format_header(state: ShellState) -> str:
     title = state.commit_title or ""
-    return f"agentdiff  {title}".rstrip()
+    header = f"agentdiff  {title}".rstrip()
+    change = state.change
+    if change is None or not change.versions:
+        return header
+    number = min(state.version_index, len(change.versions) - 1) + 1
+    header = f"{header}  v{number} of {len(change.versions)}"
+    if not is_current_version(state):
+        header = f"{header} (history)"
+    return header
 
 
 def format_file(entry: FileEntry) -> str:

@@ -5,12 +5,14 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from tests.diff.conftest import load_fixture
+from tests.tui.conftest import comment_factory, make_version
 
-from agentdiff.model import Change, stable_change_id
+from agentdiff.model import Change, CommentState, LineRange, stable_change_id
 from agentdiff.model.types import Side
 from agentdiff.store import StoreError, create_store
-from agentdiff.tui.session import load_shell_state
-from agentdiff.tui.state import ShellStatus
+from agentdiff.tui.comments import build_comment_view
+from agentdiff.tui.session import load_comments, load_shell_state
+from agentdiff.tui.state import ShellStatus, build_shell_state
 
 BASIC = load_fixture("basic.patch")
 DELETED = load_fixture("deleted_file.patch")
@@ -156,6 +158,43 @@ def test_load_shell_state_store_error_is_mapped(tmp_path: Path) -> None:
     assert state.status is ShellStatus.ERROR
     assert (state.message or "").startswith("store error")
     assert "disk full" in (state.message or "")
+
+
+def test_session_loads_comments_including_closed(tmp_path: Path) -> None:
+    store = create_store(tmp_path)
+    change = Change(id="chg-s", versions=[make_version("rev-1", "basic.patch")])
+    store.save_change(change)
+    active = comment_factory(
+        "c-a",
+        change_id="chg-s",
+        revision="rev-1",
+        state=CommentState.ACTIVE,
+        range=LineRange(side=Side.NEW, start=1, end=1),
+    )
+    resolved = comment_factory(
+        "c-r",
+        change_id="chg-s",
+        revision="rev-1",
+        state=CommentState.RESOLVED,
+        range=LineRange(side=Side.NEW, start=2, end=2),
+    )
+    closed = comment_factory(
+        "c-c",
+        change_id="chg-s",
+        revision="rev-1",
+        state=CommentState.CLOSED,
+        range=LineRange(side=Side.NEW, start=3, end=3),
+    )
+    store.add_comment(active)
+    store.add_comment(resolved)
+    store.add_comment(closed)
+
+    loaded = load_comments(store, "chg-s")
+    state = build_shell_state(change, comments=loaded)
+
+    assert [c.id for c in loaded] == ["c-a", "c-r", "c-c"]
+    assert state.comments == loaded
+    assert [c.id for c in build_comment_view(state.comments, change).hidden] == ["c-c"]
 
 
 def test_session_fetches_content_from_the_correct_revision_side(

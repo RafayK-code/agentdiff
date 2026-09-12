@@ -18,9 +18,26 @@ from agentdiff.model import (
     CommentValidationError,
     LineRange,
     Side,
+    Version,
 )
 from agentdiff.store import JsonlStore, Store, StoreBackend, StoreError, create_store
 from agentdiff.store.locking import file_lock
+
+
+def _basic_files() -> list:
+    return parse_unified_diff(load_fixture("basic.patch")).files
+
+
+def _two_version_change(change_id: str = "chg-s") -> Change:
+    return Change(
+        id=change_id,
+        branch="feat/x",
+        base_revision="base",
+        versions=[
+            Version(revision="rev-1", files=_basic_files()),
+            Version(revision="rev-2", files=_basic_files()),
+        ],
+    )
 
 
 def test_store_protocol_runtime_checkable(store: JsonlStore) -> None:
@@ -113,9 +130,8 @@ def test_change_and_comment_roundtrip(store: JsonlStore, change: Change) -> None
     assert comments[1].range is None
 
     store.save_change(change)
-    store.save_change(change.model_copy(update={"head_revision": "abc123"}))
     assert store.list_comments(change.id) == [c1, c2]
-    assert store.load_change(change.id).head_revision == "abc123"
+    assert store.load_change(change.id) == change
 
 
 def test_store_dir_laziness(tmp_path: Path, change: Change) -> None:
@@ -171,7 +187,6 @@ def test_add_valid_comments_accepted(store: JsonlStore, change: Change) -> None:
         "unknown-change",
         "invalid-file",
         "invalid-line-range",
-        "nonexistent-thread",
         "duplicate-id",
         "typed-storeerror",
     ],
@@ -212,14 +227,6 @@ def test_add_comment_rejects_invalid(
         with pytest.raises(StoreError):
             store.add_comment(c2)
         assert store.list_comments(change_m.id) == []
-    elif scenario == "nonexistent-thread":
-        store.save_change(change)
-        c_root = comment_factory(change, id="c-root")
-        store.add_comment(c_root)
-        reply = comment_factory(change, id="c-ghost", thread_id="th-999")
-        with pytest.raises(StoreError):
-            store.add_comment(reply)
-        assert store.list_comments(change.id) == [c_root]
     elif scenario == "duplicate-id":
         store.save_change(change)
         store.add_comment(comment_factory(change, id="c-dup"))
@@ -253,6 +260,157 @@ def test_add_comment_rejects_invalid(
         assert "nope.py" in str(cases[0])
         assert "src/foo.py" in str(cases[1])
         assert any(ch.isdigit() for ch in str(cases[1]))
+
+
+def test_append_and_idempotent_reingest(tmp_path: Path) -> None:
+    store = create_store(tmp_path)
+    v1 = Version(revision="rev-1", files=_basic_files())
+    v2 = Version(revision="rev-2", files=_basic_files())
+    one = Change(id="chg-s", branch="feat/x", base_revision="base", versions=[v1])
+    two = Change(id="chg-s", branch="feat/x", base_revision="base", versions=[v1, v2])
+    c1 = comment_factory(one, id="c1", revision="rev-1")
+
+    store.save_change(one)
+    assert store.load_change("chg-s").versions == [v1]
+
+    store.add_comment(c1)
+    store.save_change(one)
+    assert store.load_change("chg-s").versions == [v1]
+    assert [c.id for c in store.list_comments("chg-s")] == ["c1"]
+    assert store.get_comment("c1").state is CommentState.ACTIVE
+
+    store.save_change(two)
+    assert store.load_change("chg-s").versions == [v1, v2]
+    assert store.load_change("chg-s").current.revision == "rev-2"
+    assert store.get_comment("c1").state is CommentState.RESOLVED
+
+    store.save_change(two)
+    assert store.load_change("chg-s").versions == [v1, v2]
+    assert store.get_comment("c1").state is CommentState.RESOLVED
+
+
+def test_auto_resolve_lifecycle(tmp_path: Path) -> None:
+    store = create_store(tmp_path)
+    v1 = Version(revision="rev-1", files=_basic_files())
+    v2 = Version(revision="rev-2", files=_basic_files())
+    v3 = Version(revision="rev-3", files=_basic_files())
+    store.save_change(Change(id="chg-s", versions=[v1]))
+
+    c1 = comment_factory(
+        Change(id="chg-s", versions=[v1]),
+        id="c1",
+        revision="rev-1",
+        state=CommentState.ACTIVE,
+    )
+    c2 = comment_factory(
+        Change(id="chg-s", versions=[v1]),
+        id="c2",
+        revision="rev-1",
+        state=CommentState.CLOSED,
+    )
+    store.add_comment(c1)
+    store.add_comment(c2)
+
+    store.save_change(Change(id="chg-s", versions=[v1, v2]))
+    assert store.get_comment("c1").state is CommentState.RESOLVED
+    assert store.get_comment("c2").state is CommentState.CLOSED
+    assert [c.id for c in store.list_comments("chg-s", include_closed=True)] == [
+        "c1",
+        "c2",
+    ]
+
+    c3 = comment_factory(
+        Change(id="chg-s", versions=[v1, v2]),
+        id="c3",
+        revision="rev-2",
+        state=CommentState.ACTIVE,
+    )
+    store.add_comment(c3)
+    assert store.get_comment("c3").state is CommentState.ACTIVE
+
+    store.save_change(Change(id="chg-s", versions=[v1, v2, v3]))
+    assert store.get_comment("c3").state is CommentState.RESOLVED
+    assert store.get_comment("c1").state is CommentState.RESOLVED
+    assert store.get_comment("c2").state is CommentState.CLOSED
+
+    before = {c.id: c.state for c in store.list_comments("chg-s", include_closed=True)}
+    store.save_change(Change(id="chg-s", versions=[v1, v2, v3]))
+    after = {c.id: c.state for c in store.list_comments("chg-s", include_closed=True)}
+    assert before == after
+
+
+def test_reply_chains(tmp_path: Path) -> None:
+    store = create_store(tmp_path)
+    change = _two_version_change()
+    store.save_change(change)
+
+    root = comment_factory(change, id="r-id", revision="rev-2")
+    store.add_comment(root)
+
+    reply = comment_factory(change, id="r-reply", revision="rev-2", in_reply_to="r-id")
+    store.add_comment(reply)
+    stored = store.get_comment("r-reply")
+    assert stored.in_reply_to == "r-id"
+    assert stored.change_id == "chg-s"
+    assert stored.revision == "rev-2"
+    assert stored.state is CommentState.ACTIVE
+
+    historical_root = comment_factory(change, id="old-root", revision="rev-1")
+    store.add_comment(historical_root)
+    assert store.get_comment("old-root").revision == "rev-1"
+
+    with pytest.raises(StoreError):
+        store.add_comment(
+            comment_factory(
+                change, id="ghost-reply", revision="rev-2", in_reply_to="c-ghost"
+            )
+        )
+    assert store.get_comment("r-id") is not None
+
+    with pytest.raises(StoreError):
+        store.add_comment(
+            comment_factory(
+                change, id="wrong-rev-reply", revision="rev-1", in_reply_to="r-id"
+            )
+        )
+    assert [c.id for c in store.list_comments("chg-s")] == [
+        "r-id",
+        "r-reply",
+        "old-root",
+    ]
+
+
+def test_list_comments_filters_by_revision_and_closed(tmp_path: Path) -> None:
+    store = create_store(tmp_path)
+    change = _two_version_change()
+    store.save_change(change)
+    c1 = comment_factory(change, id="c1", revision="rev-1")
+    c2 = comment_factory(change, id="c2", revision="rev-1", state=CommentState.CLOSED)
+    c3 = comment_factory(change, id="c3", revision="rev-2")
+    c4 = comment_factory(change, id="c4", revision="rev-2", state=CommentState.RESOLVED)
+    for comment in (c1, c2, c3, c4):
+        store.add_comment(comment)
+
+    assert [c.id for c in store.list_comments("chg-s", revision="rev-1")] == ["c1"]
+    assert [
+        c.id
+        for c in store.list_comments("chg-s", revision="rev-1", include_closed=True)
+    ] == ["c1", "c2"]
+    assert [c.id for c in store.list_comments("chg-s", revision="rev-2")] == [
+        "c3",
+        "c4",
+    ]
+    assert [c.id for c in store.list_comments("chg-s", state=CommentState.ACTIVE)] == [
+        "c1",
+        "c3",
+    ]
+    assert store.list_comments("chg-s", revision="rev-3") == []
+    assert [
+        c.id
+        for c in store.list_comments(
+            "chg-s", file="src/foo.py", state=CommentState.ACTIVE
+        )
+    ] == ["c1", "c3"]
 
 
 def test_update_semantics(tmp_path: Path, change: Change) -> None:
@@ -304,6 +462,17 @@ def test_update_semantics(tmp_path: Path, change: Change) -> None:
     with pytest.raises(StoreError):
         store.update_comment(tampered)
     assert store.get_comment("c-1").change_id == change.id
+
+    store = create_store(tmp_path / "revision")
+    store.save_change(_two_version_change())
+    store.add_comment(
+        comment_factory(_two_version_change(), id="c-1", revision="rev-2")
+    )
+    with pytest.raises(StoreError):
+        store.update_comment(
+            comment_factory(_two_version_change(), id="c-1", revision="rev-1")
+        )
+    assert store.get_comment("c-1").revision == "rev-2"
 
     store = create_store(tmp_path / "drifted")
     store.save_change(change)
@@ -360,90 +529,6 @@ def test_update_semantics(tmp_path: Path, change: Change) -> None:
     assert drifted.range == LineRange(side=Side.NEW, start=99, end=99)
 
 
-def test_list_comments_filters(tmp_path: Path, change: Change) -> None:
-    store = create_store(tmp_path / "threads")
-    store.save_change(change)
-    root = comment_factory(change, id="c-root")
-    r1 = comment_factory(change, id="c-r1", thread_id="c-root")
-    r2 = comment_factory(change, id="c-r2", thread_id="c-root")
-    store.add_comment(root)
-    store.add_comment(r1)
-    store.add_comment(r2)
-    assert store.list_comments(change.id, thread_id="c-root") == [root, r1, r2]
-    assert store.list_comments(change.id) == [root, r1, r2]
-
-    store = create_store(tmp_path / "excludes")
-    store.save_change(change)
-    a_root = comment_factory(change, id="c-a")
-    b_root = comment_factory(change, id="c-b")
-    a_reply = comment_factory(change, id="c-ar", thread_id="c-a")
-    b_reply = comment_factory(change, id="c-br", thread_id="c-b")
-    store.add_comment(a_root)
-    store.add_comment(b_root)
-    store.add_comment(a_reply)
-    store.add_comment(b_reply)
-    assert store.list_comments(change.id, thread_id="c-a") == [a_root, a_reply]
-    assert store.list_comments(change.id, thread_id="c-b") == [b_root, b_reply]
-    assert store.list_comments(change.id) == [a_root, b_root, a_reply, b_reply]
-
-    store = create_store(tmp_path / "files")
-    store.save_change(change)
-    c1 = comment_factory(change, id="c-1", file="src/foo.py")
-    c2 = comment_factory(change, id="c-2", file="src/foo.py")
-    store.add_comment(c1)
-    store.add_comment(c2)
-    change_b = parse_unified_diff(load_fixture("new_file.patch"))
-    store.save_change(change_b)
-    c3 = comment_factory(change_b, id="c-3", file="new.txt", range=None)
-    store.add_comment(c3)
-    assert store.list_comments(change.id, file="src/foo.py") == [c1, c2]
-    assert store.list_comments(change.id, file="src/other.py") == []
-    assert store.list_comments(change_b.id, file="new.txt") == [c3]
-
-    store = create_store(tmp_path / "states")
-    store.save_change(change)
-    c_a = comment_factory(change, id="c-a", state=CommentState.ACTIVE)
-    c_r = comment_factory(change, id="c-r", state=CommentState.RESOLVED)
-    c_c = comment_factory(change, id="c-c", state=CommentState.CLOSED)
-    store.add_comment(c_a)
-    store.add_comment(c_r)
-    store.add_comment(c_c)
-    assert store.list_comments(change.id) == [c_a, c_r]
-    assert store.list_comments(change.id, include_closed=True) == [c_a, c_r, c_c]
-    assert store.list_comments(change.id, file="src/foo.py") == [c_a, c_r]
-    assert store.list_comments(change.id, state=CommentState.ACTIVE) == [c_a]
-    assert store.list_comments(change.id, state=CommentState.RESOLVED) == [c_r]
-    assert store.list_comments(change.id, state=CommentState.CLOSED) == []
-    assert store.list_comments(
-        change.id, state=CommentState.CLOSED, include_closed=True
-    ) == [c_c]
-    assert store.list_comments(
-        change.id, file="src/foo.py", state=CommentState.ACTIVE, thread_id=None
-    ) == [c_a]
-    assert (
-        store.list_comments(
-            change.id, file="src/other.py", state=CommentState.ACTIVE, thread_id=None
-        )
-        == []
-    )
-    assert (
-        store.list_comments(
-            change.id, file="src/foo.py", state=CommentState.CLOSED, thread_id=None
-        )
-        == []
-    )
-    assert (
-        store.list_comments(
-            change.id, file="src/foo.py", state=CommentState.ACTIVE, thread_id="nope"
-        )
-        == []
-    )
-    assert store.list_comments(change.id, file=None, state=None, thread_id=None) == [
-        c_a,
-        c_r,
-    ]
-
-
 def test_close_comment_sets_closed_retains_and_bumps(
     tmp_path: Path, change: Change
 ) -> None:
@@ -461,15 +546,12 @@ def test_close_comment_sets_closed_retains_and_bumps(
     assert closed.created_at == t0
 
 
-def test_close_comment_errors_and_lock_guard(
-    tmp_path: Path, canonical_store: CanonicalStore
-) -> None:
+def test_close_comment_errors(tmp_path: Path, canonical_store: CanonicalStore) -> None:
     fresh = create_store(tmp_path / "ghost")
     with pytest.raises(StoreError):
         fresh.close_comment("c-ghost")
-    with pytest.raises(StoreError):
-        canonical_store.store.close_comment("c-1")
-    assert canonical_store.store.get_comment("c-1").state is CommentState.ACTIVE
+    closed = canonical_store.store.close_comment("c-1")
+    assert closed.state is CommentState.CLOSED
 
 
 def test_storeerror_carries_line_and_lineno(

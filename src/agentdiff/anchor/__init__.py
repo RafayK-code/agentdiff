@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+from collections.abc import Sequence
 from datetime import datetime, timezone
 
 from agentdiff.model.types import (
@@ -15,6 +16,8 @@ from agentdiff.model.types import (
 )
 
 _FUZZY_THRESHOLD = 0.8
+
+RESOLVE_AUTHOR = "agent"
 
 
 def _normalize(text: str) -> str:
@@ -121,4 +124,104 @@ def reopen_reply(
     )
 
 
-__all__ = ["reanchor", "reopen_reply", "snapshot_lines"]
+def is_resolve_comment(comment: Comment) -> bool:
+    """A resolve comment carries the RESOLVED state. (R7, Feedback 1)"""
+    return comment.state is CommentState.RESOLVED
+
+
+def _thread_root(comment: Comment, by_id: dict[str, Comment]) -> Comment:
+    seen = {comment.id}
+    current = comment
+    while (
+        current.in_reply_to is not None
+        and current.in_reply_to in by_id
+        and current.in_reply_to not in seen
+    ):
+        seen.add(current.in_reply_to)
+        current = by_id[current.in_reply_to]
+    return current
+
+
+def thread_root(comment: Comment, comments: Sequence[Comment]) -> Comment:
+    """The first comment of ``comment``'s reply chain. (Feedback 4)"""
+    return _thread_root(comment, {item.id: item for item in comments})
+
+
+def thread_root_id(comment: Comment, comments: Sequence[Comment]) -> str:
+    """The id of the root of ``comment``'s reply chain. (R7, R8)"""
+    return thread_root(comment, comments).id
+
+
+def thread_members(
+    comment: Comment, comments: Sequence[Comment]
+) -> tuple[Comment, ...]:
+    """Every member of ``comment``'s reply chain, ordered root→tip. (Feedback 4)"""
+    by_id = {item.id: item for item in comments}
+    root_id = _thread_root(comment, by_id).id
+    members = [item for item in comments if _thread_root(item, by_id).id == root_id]
+    if not any(item.id == comment.id for item in members):
+        members.append(comment)
+    return tuple(sorted(members, key=lambda item: (item.created_at, item.id)))
+
+
+def thread_tip(comment: Comment, comments: Sequence[Comment]) -> Comment:
+    """The last member of ``comment``'s chain by ``(created_at, id)``. (Feedback 4)"""
+    return thread_members(comment, comments)[-1]
+
+
+def is_resolved_thread(comment: Comment, comments: Sequence[Comment]) -> bool:
+    """True when the last comment in the reply chain is a resolve comment. (R8)"""
+    return is_resolve_comment(thread_tip(comment, comments))
+
+
+def resolution_reply(
+    comment: Comment,
+    change: Change,
+    *,
+    author: str = RESOLVE_AUTHOR,
+    now: datetime | None = None,
+) -> Comment:
+    """The RESOLVED reply that resolves ``comment``'s thread. (R7, Feedback 1)
+
+    Resolving is a comment: this is an ordinary reply with ``state=RESOLVED``.
+    The original comment is left untouched. Both the TUI and the CLI resolve
+    through this one function so their behavior cannot drift.
+    """
+    current = change.current
+    if current is None:
+        raise ValueError(f"change {change.id!r} has no version to resolve onto")
+    timestamp = now if now is not None else datetime.now(timezone.utc)
+    return Comment(
+        id=new_comment_id(),
+        change_id=change.id,
+        revision=current.revision,
+        file=comment.file,
+        range=comment.range,
+        text="resolved",
+        author=author,
+        in_reply_to=comment.id,
+        state=CommentState.RESOLVED,
+        drifted=False,
+        created_at=timestamp,
+        updated_at=timestamp,
+        anchor_snapshot=(
+            snapshot_lines(current, comment.file, comment.range)
+            if comment.range is not None
+            else []
+        ),
+    )
+
+
+__all__ = [
+    "RESOLVE_AUTHOR",
+    "is_resolve_comment",
+    "is_resolved_thread",
+    "reanchor",
+    "reopen_reply",
+    "resolution_reply",
+    "snapshot_lines",
+    "thread_members",
+    "thread_root",
+    "thread_root_id",
+    "thread_tip",
+]

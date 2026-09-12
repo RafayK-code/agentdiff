@@ -8,9 +8,46 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, ScrollableContainer, Vertical
-from textual.events import Click, TextSelected
-from textual.widgets import Footer, Label, ListItem, ListView, Static
+from textual.events import Click, Key, Resize, TextSelected
+from textual.widgets import Button, Footer, Input, Label, ListItem, ListView, Static
 
+from agentdiff.model.types import Comment, LineRange, Side
+from agentdiff.store import Store, StoreError, create_store
+from agentdiff.tui.comments import (
+    DEFAULT_AUTHOR,
+    AnchorBox,
+    CommentAnnotation,
+    CommentKind,
+    CommentView,
+    DraftKind,
+    EditorDraft,
+    FileCommentCounts,
+    PendingBuffer,
+    Selection,
+    anchor_boxes,
+    annotate,
+    build_comment_view,
+    comment_counts,
+    draft_to_comment,
+    extend_to,
+    flush_comments,
+    inline_annotations,
+    is_resolved_thread,
+    move_anchor,
+    new_draft,
+    pending_count,
+    put_pending,
+    remove_pending,
+    reopen_draft,
+    reply_draft,
+    resolution_reply,
+    select_line,
+    selection_range,
+    set_draft_text,
+    thread_members,
+    thread_rows,
+    thread_tip,
+)
 from agentdiff.tui.render import (
     CellKind,
     Column,
@@ -21,17 +58,22 @@ from agentdiff.tui.render import (
     ViewMode,
     expand_all_view,
     expand_view,
+    line_index,
+    line_number,
     make_diff_view,
     next_hunk,
     prev_hunk,
     render_view,
 )
-from agentdiff.tui.session import load_shell_state
+from agentdiff.tui.session import load_comments, load_shell_state
 from agentdiff.tui.state import (
     ShellState,
     format_file,
     format_header,
+    is_current_version,
     select_file,
+    select_version,
+    selected_version,
 )
 
 _FILE_HEADER_STYLE = Style(color="#569cd6", bold=True)
@@ -45,6 +87,9 @@ _ADD_SPAN_STYLE = Style(bgcolor="#2ea043")
 _DEL_SPAN_STYLE = Style(bgcolor="#c93c37")
 _SKIP_STYLE = Style(color="#808080", italic=True)
 _NOTE_STYLE = Style(color="#808080", italic=True)
+_COMMENT_STYLE = Style(color="#c586c0")
+_PENDING_COMMENT_STYLE = Style(color="#dcdcaa", italic=True)
+_RESOLVED_COMMENT_STYLE = Style(color="#4ec9b0", italic=True)
 _SELECTED_LINE_STYLE = Style(bgcolor="#3a3a3a")
 _SELECTED_ADD_STYLE = Style(bgcolor="#2d6a3f")
 _SELECTED_DEL_STYLE = Style(bgcolor="#6a2d2d")
@@ -62,28 +107,71 @@ def _clamp(value: int, count: int) -> int:
     return max(0, min(count - 1, value))
 
 
+def _box_style(kind: CommentKind) -> Style:
+    if kind is CommentKind.RESOLVED:
+        return _RESOLVED_COMMENT_STYLE
+    if kind is CommentKind.PENDING:
+        return _PENDING_COMMENT_STYLE
+    return _COMMENT_STYLE
+
+
+class _AnchorLabel(Static):
+    can_focus = True
+
+
 class AgentdiffApp(App[None]):
     CSS = """
     #header {
         dock: top;
-        height: 1;
+        height: 3;
+        align: center middle;
+    }
+    #header-label {
+        width: 1fr;
+        height: 3;
+        content-align: center middle;
+    }
+    #prev-version, #next-version {
+        min-width: 5;
     }
     #body {
         height: 1fr;
     }
     #files {
-        width: 24%;
+        width: 34%;
         border: round #303030;
     }
     #files:focus {
         border: round #4ec9b0;
     }
+    .file-row {
+        height: 1;
+    }
+    .file-name {
+        width: 1fr;
+        text-overflow: ellipsis;
+    }
+    .file-counts {
+        width: auto;
+        height: 1;
+        padding: 0 0 0 1;
+    }
     #diff-column {
         width: 1fr;
     }
-    #change-indicator {
+    #meta {
         height: 1;
+    }
+    #change-indicator {
+        width: auto;
+        height: 1;
+        padding: 0 2 0 0;
         color: #9cdcfe;
+    }
+    #status {
+        width: 1fr;
+        height: 1;
+        color: #dcdcaa;
     }
     #diff-pane {
         height: 1fr;
@@ -95,6 +183,15 @@ class AgentdiffApp(App[None]):
     #diff {
         width: auto;
         text-wrap: nowrap;
+    }
+    #editor {
+        display: none;
+        height: 6;
+        border: round #4ec9b0;
+        padding: 0 1;
+    }
+    #editor-anchor:focus {
+        background: #264f78;
     }
     """
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -110,52 +207,129 @@ class AgentdiffApp(App[None]):
         Binding("=", "expand_down", "Expand down", show=False),
         Binding("[", "expand_up", "Expand up"),
         Binding("e", "expand_all", "Expand all"),
+        Binding("h", "prev_version", "Prev version"),
+        Binding("l", "next_version", "Next version"),
+        Binding("c", "new_comment", "Comment"),
+        Binding("r", "reply", "Reply"),
+        Binding("s", "resolve", "Resolve"),
+        Binding("x", "close_comment", "Close"),
+        Binding("C", "confirm_comments", "Confirm"),
+        Binding("v", "toggle_range", "Range"),
+        Binding("d", "remove_pending", "Remove"),
+        Binding("escape", "cancel", "Cancel", show=False),
     ]
 
-    def __init__(self, state: ShellState) -> None:
+    def __init__(self, state: ShellState, store: Store | None = None) -> None:
         super().__init__()
         self._state = state
+        self._store = store
         self._view_mode = ViewMode.UNIFIED
         self._view = self._build_view(state.selected)
         self._selected_line = 0
         self._rendered: RenderedDiff | None = None
         self._base_text: Text | None = None
+        self._base_width = -1
         self._line_ranges: list[tuple[int, int]] = []
+        self._line_to_row: dict[int, int] = {}
+        self._row_to_line: list[int | None] = []
+        self._comment_rows: dict[int, Comment] = {}
+        self._annotations_by_line: dict[int, CommentAnnotation] = {}
+        self._pending = PendingBuffer()
+        self._draft: EditorDraft | None = None
+        self._selection = Selection()
+        self._range_mode = False
+        self._anchor_boxes: tuple[AnchorBox, ...] = ()
+        self._comments = tuple(state.comments)
+        self._view_state = self._build_comment_view()
+        self._status = ""
+
+    def _build_comment_view(self) -> CommentView:
+        change = self._state.change
+        if change is None:
+            return CommentView(inline=(), resolved=(), hidden=())
+        return build_comment_view(self._comments, change)
+
+    def _current_file_path(self) -> str | None:
+        version = selected_version(self._state)
+        if version is None or not 0 <= self._state.selected < len(version.files):
+            return None
+        return version.files[self._state.selected].path
 
     def _build_view(self, index: int) -> DiffView | None:
-        change = self._state.change
-        if change is None or not 0 <= index < len(change.files):
+        version = selected_version(self._state)
+        if version is None or not 0 <= index < len(version.files):
             return None
         entry = self._state.files[index]
-        content = (
-            self._state.contents[index] if index < len(self._state.contents) else None
-        )
+        content = None
+        if is_current_version(self._state) and index < len(self._state.contents):
+            content = self._state.contents[index]
         return make_diff_view(
-            change.files[index], header=format_file(entry), content=content
+            version.files[index], header=format_file(entry), content=content
         )
 
     def compose(self) -> ComposeResult:
-        yield Static(format_header(self._state), id="header")
+        with Horizontal(id="header"):
+            yield Button("\u2039", id="prev-version")
+            yield Static(format_header(self._state), id="header-label")
+            yield Button("\u203a", id="next-version")
         with Horizontal(id="body"):
             with ListView(id="files"):
                 for entry in self._state.files:
                     yield ListItem(Label(format_file(entry)))
             with Vertical(id="diff-column"):
-                yield Static("", id="change-indicator")
+                with Horizontal(id="meta"):
+                    yield Static("", id="change-indicator")
+                    yield Static("", id="status")
                 with ScrollableContainer(id="diff-pane"):
                     yield Static("", id="diff")
+                with Vertical(id="editor"):
+                    yield _AnchorLabel("", id="editor-anchor")
+                    yield Input(id="editor-text")
         yield Footer()
 
     def on_mount(self) -> None:
         if self._state.files:
             self.query_one("#files", ListView).focus()
+        self._refresh_header()
+        self._refresh_files()
         self._refresh_diff(focus_hunk=True)
+
+    def _refresh_header(self) -> None:
+        self.query_one("#header-label", Static).update(format_header(self._state))
+        change = self._state.change
+        count = len(change.versions) if change is not None else 0
+        self.query_one("#prev-version", Button).disabled = (
+            self._state.version_index <= 0
+        )
+        self.query_one("#next-version", Button).disabled = (
+            count == 0 or self._state.version_index >= count - 1
+        )
 
     def _set_index(self, index: int) -> None:
         self._state = select_file(self._state, index - self._state.selected)
         self._view = self._build_view(self._state.selected)
         self._selected_line = 0
         self._refresh_diff(focus_hunk=True)
+
+    def _refresh_files(self) -> None:
+        files = self.query_one("#files", ListView)
+        files.clear()
+        counts = comment_counts(self._view_state, self._pending)
+        for entry in self._state.files:
+            entry_counts = counts.get(entry.path, FileCommentCounts())
+            counts_text = Text()
+            if entry_counts.draft:
+                counts_text.append(f"{entry_counts.draft}", _PENDING_COMMENT_STYLE)
+            if entry_counts.resolved:
+                counts_text.append(f" {entry_counts.resolved}", _RESOLVED_COMMENT_STYLE)
+            if entry_counts.unresolved:
+                counts_text.append(f" {entry_counts.unresolved}", _COMMENT_STYLE)
+            row = Horizontal(
+                Label(Text(format_file(entry)), classes="file-name"),
+                Label(counts_text, classes="file-counts"),
+                classes="file-row",
+            )
+            files.append(ListItem(row))
 
     def _refresh_diff(self, *, focus_hunk: bool = False) -> None:
         diff = self.query_one("#diff", Static)
@@ -164,37 +338,119 @@ class AgentdiffApp(App[None]):
             self._rendered = None
             self._base_text = None
             self._line_ranges = []
+            self._line_to_row = {}
+            self._row_to_line = []
+            self._comment_rows = {}
+            self._annotations_by_line = {}
+            self._anchor_boxes = ()
             diff.update(self._state.message or "")
             indicator.update("")
+            self._refresh_status()
             return
-        rendered = render_view(self._view, self._view_mode)
+        base = render_view(self._view, self._view_mode)
+        path = self._current_file_path()
+        annotations = (
+            inline_annotations(self._view_state, self._pending, path)
+            if path is not None and is_current_version(self._state)
+            else ()
+        )
+        annotated = annotate(base, annotations)
+        rendered = annotated.rendered
+        self._comment_rows = annotated.comment_rows
+        by_id = {annotation.comment.id: annotation for annotation in annotations}
+        self._annotations_by_line = {
+            index: by_id[comment.id]
+            for index, comment in annotated.comment_rows.items()
+            if comment.id in by_id
+        }
         self._rendered = rendered
-        self._base_text = self._to_text(rendered)
+        self._anchor_boxes = anchor_boxes(rendered, annotations)
+        self._base_text = None
         if focus_hunk and rendered.hunk_starts:
             index = min(self._view.hunk_index, len(rendered.hunk_starts) - 1)
             self._selected_line = rendered.hunk_starts[index]
         self._selected_line = _clamp(self._selected_line, len(rendered.lines))
+        self._sync_selection()
         self._paint()
         count = len(self._view.file.hunks)
         indicator.update(
             f"change {self._view.hunk_index + 1} of {count}" if count else ""
         )
+        self._refresh_status()
         self._scroll_to_hunk(rendered)
 
+    def _refresh_status(self) -> None:
+        parts: list[str] = []
+        if self._status:
+            parts.append(self._status)
+        parts.append(f"pending: {pending_count(self._pending)}")
+        if self._state.change is not None and not is_current_version(self._state):
+            parts.append("history (read-only)")
+        self.query_one("#status", Static).update("  ".join(parts))
+
+    def _sync_selection(self) -> None:
+        number = self._line_number()
+        if self._range_mode:
+            if number is not None:
+                self._selection = extend_to(self._selection, number)
+        else:
+            self._selection = select_line(self._selection, number)
+
+    def _line_number(self) -> int | None:
+        if self._rendered is None or self._selected_line >= len(self._rendered.lines):
+            return None
+        return line_number(self._rendered.lines[self._selected_line], Side.NEW)
+
+    def _pane_width(self) -> int:
+        pane = self.query_one("#diff-pane", ScrollableContainer)
+        return max(0, pane.content_region.width)
+
     def _paint(self, *, layout: bool = True) -> None:
-        if self._base_text is None:
+        if self._rendered is None:
             return
+        width = self._pane_width()
+        if self._base_text is None or self._base_width != width:
+            self._base_text = self._to_text(self._rendered, min_width=width)
+            self._base_width = width
         text = self._base_text.copy()
-        if 0 <= self._selected_line < len(self._line_ranges):
-            start, end = self._line_ranges[self._selected_line]
-            text.stylize(self._selection_style(), start, end)
+        for index in self._highlight_indices():
+            row = self._line_to_row.get(index)
+            if row is not None and 0 <= row < len(self._line_ranges):
+                start, end = self._line_ranges[row]
+                text.stylize(self._style_for(index), start, end)
         self.query_one("#diff", Static).update(text, layout=layout)
 
-    def _selection_style(self) -> Style:
-        if self._rendered is not None and self._selected_line < len(
-            self._rendered.lines
-        ):
-            line = self._rendered.lines[self._selected_line]
+    def _display_span(self, rendered: RenderedDiff, line_range: LineRange) -> list[int]:
+        index = line_index(rendered, line_range.side)
+        positions = [
+            index[number]
+            for number in (line_range.start, line_range.end)
+            if number in index
+        ]
+        if not positions:
+            return []
+        low, high = min(positions), max(positions)
+        return list(range(low, high + 1))
+
+    def _highlight_indices(self) -> list[int]:
+        if self._rendered is None:
+            return []
+        comment = self._selected_comment()
+        if comment is not None:
+            rows = thread_rows(self._comment_rows, comment, self._pool())
+            if rows:
+                return list(rows)
+        line_range = selection_range(self._selection) if self._range_mode else None
+        if line_range is None:
+            return [self._selected_line]
+        return self._display_span(self._rendered, line_range) or [self._selected_line]
+
+    def _pool(self) -> list[Comment]:
+        return [*self._comments, *self._pending.items]
+
+    def _style_for(self, index: int) -> Style:
+        if self._rendered is not None and index < len(self._rendered.lines):
+            line = self._rendered.lines[index]
             for column in line.columns:
                 if column.kind is CellKind.ADD:
                     return _SELECTED_ADD_STYLE
@@ -209,6 +465,7 @@ class AgentdiffApp(App[None]):
         if target == self._selected_line:
             return
         self._selected_line = target
+        self._sync_selection()
         self._paint(layout=False)
         self._ensure_line_visible()
 
@@ -217,11 +474,12 @@ class AgentdiffApp(App[None]):
         height = pane.scrollable_content_region.height
         if height <= 0:
             return
+        row = self._line_to_row.get(self._selected_line, self._selected_line)
         offset = int(pane.scroll_offset.y)
-        if self._selected_line < offset:
-            pane.scroll_to(y=self._selected_line, animate=False)
-        elif self._selected_line >= offset + height:
-            pane.scroll_to(y=self._selected_line - height + 1, animate=False)
+        if row < offset:
+            pane.scroll_to(y=row, animate=False)
+        elif row >= offset + height:
+            pane.scroll_to(y=row - height + 1, animate=False)
 
     def _diff_focused(self) -> bool:
         pane = self.query_one("#diff-pane", ScrollableContainer)
@@ -232,22 +490,82 @@ class AgentdiffApp(App[None]):
         if self._view is None or not rendered.hunk_starts:
             return
         index = min(self._view.hunk_index, len(rendered.hunk_starts) - 1)
+        line = rendered.hunk_starts[index]
         pane = self.query_one("#diff-pane", ScrollableContainer)
-        pane.scroll_to(y=rendered.hunk_starts[index], animate=False)
+        pane.scroll_to(y=self._line_to_row.get(line, line), animate=False)
 
-    def _to_text(self, rendered: RenderedDiff) -> Text:
+    def _to_text(self, rendered: RenderedDiff, *, min_width: int = 0) -> Text:
+        line_box: dict[int, AnchorBox] = {}
+        box_starts: set[int] = set()
+        box_ends: set[int] = set()
+        for box in self._anchor_boxes:
+            for index in range(box.start, box.end + 1):
+                line_box[index] = box
+            box_starts.add(box.start)
+            box_ends.add(box.end)
+
+        pieces: list[Text] = []
+        for index, line in enumerate(rendered.lines):
+            piece = Text()
+            box = line_box.get(index)
+            if box is not None:
+                piece.append("\u2502 ", _box_style(box.kind))
+            else:
+                piece.append("  ")
+            self._append_line(piece, line, index)
+            pieces.append(piece)
+
+        widths = [piece.cell_len for piece in pieces]
+        widths.append(min_width)
+        width = max(widths)
+
         text = Text()
         ranges: list[tuple[int, int]] = []
-        for index, line in enumerate(rendered.lines):
-            if index:
+        row_to_line: list[int | None] = []
+        line_to_row: dict[int, int] = {}
+
+        def emit(piece: Text, rendered_index: int | None) -> None:
+            if ranges:
                 text.append("\n")
             start = len(text)
-            self._append_line(text, line)
+            text.append(piece)
+            pad = width - piece.cell_len
+            if pad > 0:
+                text.append(" " * pad)
             ranges.append((start, len(text)))
+            row_to_line.append(rendered_index)
+            if rendered_index is not None:
+                line_to_row[rendered_index] = len(ranges) - 1
+
+        for index, piece in enumerate(pieces):
+            box = line_box.get(index)
+            if index in box_starts:
+                assert box is not None
+                style = _box_style(box.kind)
+                border = Text()
+                border.append("\u250c" + "\u2500" * max(0, width - 1) + "\u2510", style)
+                emit(border, None)
+            if box is not None:
+                styled = piece.copy()
+                style = _box_style(box.kind)
+                styled.append(" " * max(0, width - piece.cell_len), style)
+                styled.append("\u2502", style)
+                emit(styled, index)
+            else:
+                emit(piece, index)
+            if index in box_ends:
+                assert box is not None
+                style = _box_style(box.kind)
+                border = Text()
+                border.append("\u2514" + "\u2500" * max(0, width - 1) + "\u2518", style)
+                emit(border, None)
+
         self._line_ranges = ranges
+        self._row_to_line = row_to_line
+        self._line_to_row = line_to_row
         return text
 
-    def _append_line(self, text: Text, line: DisplayLine) -> None:
+    def _append_line(self, text: Text, line: DisplayLine, index: int) -> None:
         if line.kind is RowKind.FILE_HEADER:
             text.append(line.text, _FILE_HEADER_STYLE)
         elif line.kind is RowKind.HUNK_HEADER:
@@ -260,6 +578,15 @@ class AgentdiffApp(App[None]):
             text.append(line.text, _SKIP_STYLE)
         elif line.kind is RowKind.NOTE:
             text.append(line.text, _NOTE_STYLE)
+        elif line.kind is RowKind.COMMENT:
+            annotation = self._annotations_by_line.get(index)
+            if annotation is not None and annotation.resolved:
+                style = _RESOLVED_COMMENT_STYLE
+            elif annotation is not None and annotation.pending:
+                style = _PENDING_COMMENT_STYLE
+            else:
+                style = _COMMENT_STYLE
+            text.append(line.text, style)
         else:
             for column in line.columns:
                 self._append_column(text, column)
@@ -337,6 +664,12 @@ class AgentdiffApp(App[None]):
             self._refresh_diff()
 
     def action_expand_all(self) -> None:
+        comment = self._selected_comment()
+        if comment is not None and any(
+            item.id == comment.id for item in self._pending.items
+        ):
+            self._edit_pending(comment)
+            return
         if self._view is None:
             return
         view = expand_all_view(self._view)
@@ -344,8 +677,263 @@ class AgentdiffApp(App[None]):
             self._view = view
             self._refresh_diff()
 
+    def _select_version(self, delta: int) -> None:
+        updated = select_version(self._state, delta)
+        if updated is self._state:
+            return
+        self._state = updated
+        self._selection = Selection()
+        self._range_mode = False
+        self._view = self._build_view(self._state.selected)
+        self._selected_line = 0
+        self._refresh_header()
+        self._refresh_files()
+        self._refresh_diff(focus_hunk=True)
+
+    def action_prev_version(self) -> None:
+        self._select_version(-1)
+
+    def action_next_version(self) -> None:
+        self._select_version(+1)
+
+    def _can_author(self) -> bool:
+        if self._view is None or self._state.change is None:
+            return False
+        if not is_current_version(self._state):
+            self._status = "history is read-only"
+            self._refresh_status()
+            return False
+        return True
+
+    def _selected_comment(self) -> Comment | None:
+        return self._comment_rows.get(self._selected_line)
+
+    def action_toggle_range(self) -> None:
+        self._range_mode = not self._range_mode
+        if self._range_mode:
+            self._selection = select_line(self._selection, self._line_number())
+        self._status = "range selection on" if self._range_mode else "range off"
+        self._refresh_status()
+        self._paint(layout=False)
+
+    def action_new_comment(self) -> None:
+        if not self._can_author():
+            return
+        path = self._current_file_path()
+        line_range = selection_range(self._selection)
+        if path is None or line_range is None:
+            self._status = "select a line to comment on"
+            self._refresh_status()
+            return
+        self._open_editor(new_draft(path, line_range))
+
+    def action_reply(self) -> None:
+        if not self._can_author():
+            return
+        comment = self._selected_comment()
+        change = self._state.change
+        if comment is None or change is None:
+            self._status = "select a comment to reply to"
+            self._refresh_status()
+            return
+        pool = self._pool()
+        if is_resolved_thread(comment, pool):
+            self._open_editor(
+                reopen_draft(comment, pool, change, author=DEFAULT_AUTHOR)
+            )
+            return
+        self._open_editor(reply_draft(thread_tip(comment, pool)))
+
+    def action_resolve(self) -> None:
+        if not self._can_author():
+            return
+        comment = self._selected_comment()
+        change = self._state.change
+        if comment is None or self._store is None or change is None:
+            self._status = "select a comment to resolve"
+            self._refresh_status()
+            return
+        pool = self._pool()
+        if is_resolved_thread(comment, pool):
+            self._status = "already resolved"
+            self._refresh_status()
+            return
+        try:
+            self._store.add_comment(resolution_reply(thread_tip(comment, pool), change))
+        except StoreError as exc:
+            self._status = f"store error: {exc}"
+            self._refresh_status()
+            return
+        self._status = "resolved"
+        self._reload_comments()
+
+    def action_close_comment(self) -> None:
+        if not self._can_author():
+            return
+        comment = self._selected_comment()
+        if comment is None or self._store is None:
+            self._status = "select a comment to close"
+            self._refresh_status()
+            return
+        pending_ids = {item.id for item in self._pending.items}
+        members = thread_members(comment, self._pool())
+        try:
+            for member in members:
+                if member.id not in pending_ids:
+                    self._store.close_comment(member.id)
+        except StoreError as exc:
+            self._status = f"store error: {exc}"
+            self._refresh_status()
+            return
+        for member in members:
+            if member.id in pending_ids:
+                self._pending = remove_pending(self._pending, member.id)
+        self._status = f"closed {len(members)} comment(s)"
+        self._reload_comments()
+
+    def action_confirm_comments(self) -> None:
+        if self._store is None or not self._can_author():
+            return
+        result = flush_comments(self._pending, self._store)
+        self._pending = PendingBuffer(items=result.remaining)
+        if result.error is not None:
+            self._status = f"store error: {result.error}"
+        else:
+            self._status = f"confirmed {len(result.written)} comment(s)"
+        self._reload_comments()
+
+    def action_remove_pending(self) -> None:
+        if not self._can_author():
+            return
+        comment = self._selected_comment()
+        if comment is None:
+            return
+        self._pending = remove_pending(self._pending, comment.id)
+        self._status = "pending removed"
+        self._refresh_files()
+        self._refresh_diff()
+
+    def _edit_pending(self, comment: Comment) -> None:
+        kind = DraftKind.REPLY if comment.in_reply_to else DraftKind.NEW
+        self._open_editor(
+            EditorDraft(
+                file=comment.file,
+                kind=kind,
+                anchor=comment.range,
+                text=comment.text,
+                in_reply_to=comment.in_reply_to,
+                drifted=comment.drifted,
+                editing_id=comment.id,
+            )
+        )
+
+    def _open_editor(self, draft: EditorDraft) -> None:
+        self._draft = draft
+        self.query_one("#editor", Vertical).styles.display = "block"
+        self._refresh_editor_anchor()
+        text_input = self.query_one("#editor-text", Input)
+        text_input.value = draft.text
+        text_input.focus()
+
+    def _refresh_editor_anchor(self) -> None:
+        draft = self._draft
+        if draft is None:
+            return
+        anchor = draft.anchor
+        location = (
+            f"{draft.file}:{anchor.start}-{anchor.end}"
+            if anchor is not None
+            else f"{draft.file} (file-level)"
+        )
+        quoted = f"  \u201c{draft.quoted}\u201d" if draft.quoted else ""
+        self.query_one("#editor-anchor", _AnchorLabel).update(f"{location}{quoted}")
+
+    def _close_editor(self) -> None:
+        self._draft = None
+        self.query_one("#editor", Vertical).styles.display = "none"
+        self.query_one("#editor-text", Input).value = ""
+        self.query_one("#diff-pane", ScrollableContainer).focus()
+
+    def _valid_lines(self, draft: EditorDraft) -> list[int]:
+        if self._view is None:
+            return []
+        side = draft.anchor.side if draft.anchor is not None else Side.NEW
+        rendered = render_view(self._view, self._view_mode)
+        return sorted(line_index(rendered, side))
+
+    def _move_draft_anchor(self, delta: int) -> None:
+        draft = self._draft
+        if draft is None:
+            return
+        self._draft = move_anchor(draft, delta, self._valid_lines(draft))
+        self._refresh_editor_anchor()
+
+    def _toggle_editor_focus(self) -> None:
+        if isinstance(self.focused, Input):
+            self.query_one("#editor-anchor", _AnchorLabel).focus()
+        else:
+            self.query_one("#editor-text", Input).focus()
+
+    def _confirm_draft(self, text: str) -> None:
+        draft = self._draft
+        change = self._state.change
+        if draft is None or change is None:
+            return
+        comment = draft_to_comment(
+            set_draft_text(draft, text), change, author=DEFAULT_AUTHOR
+        )
+        self._pending = put_pending(self._pending, comment)
+        self._close_editor()
+        self._status = "staged (not saved)"
+        self._refresh_files()
+        self._refresh_diff()
+
+    def _reload_comments(self) -> None:
+        change = self._state.change
+        if change is None or self._store is None:
+            return
+        try:
+            self._comments = load_comments(self._store, change.id)
+        except StoreError as exc:
+            self._status = f"store error: {exc}"
+        self._view_state = self._build_comment_view()
+        self._refresh_files()
+        self._refresh_diff()
+
+    def action_cancel(self) -> None:
+        if self._draft is not None:
+            self._close_editor()
+            self._status = "draft cancelled"
+            self._refresh_status()
+
+    def on_resize(self, event: Resize) -> None:
+        self._paint()
+
+    def on_key(self, event: Key) -> None:
+        if self._draft is None:
+            return
+        if event.key == "escape":
+            self.action_cancel()
+            event.stop()
+        elif event.key == "tab":
+            self._toggle_editor_focus()
+            event.stop()
+        elif event.key in ("j", "k") and not isinstance(self.focused, Input):
+            self._move_draft_anchor(1 if event.key == "j" else -1)
+            event.stop()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "editor-text":
+            self._confirm_draft(event.value)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "prev-version":
+            self._select_version(-1)
+        elif event.button.id == "next-version":
+            self._select_version(+1)
+
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
-        if event.list_view.index is not None:
+        if event.list_view.id == "files" and event.list_view.index is not None:
             self._set_index(event.list_view.index)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
@@ -358,11 +946,14 @@ class AgentdiffApp(App[None]):
             return
         if self._rendered is None or not self._rendered.lines:
             return
-        line = int(event.screen_y - region.y + pane.scroll_offset.y)
-        target = _clamp(line, len(self._rendered.lines))
-        if target == self._selected_line:
+        row = int(event.screen_y - region.y + pane.scroll_offset.y)
+        if not 0 <= row < len(self._row_to_line):
+            return
+        target = self._row_to_line[row]
+        if target is None or target == self._selected_line:
             return
         self._selected_line = target
+        self._sync_selection()
         self._paint(layout=False)
 
     def on_text_selected(self, event: TextSelected) -> None:
@@ -372,6 +963,7 @@ class AgentdiffApp(App[None]):
 
 
 def run_tui(root: Path) -> int:
-    state = load_shell_state(root)
-    AgentdiffApp(state).run()
+    store = create_store(root)
+    state = load_shell_state(root, store=store)
+    AgentdiffApp(state, store).run()
     return 0
