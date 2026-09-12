@@ -128,5 +128,50 @@
       "drifted": false,
       "created_at": "2024-01-01T14:05:00Z"
     }
+  ],
+  "threads": [
+    {
+      "root": "c-new",
+      "state": "open",
+      "comments": [
+        "c-new"
+      ]
+    },
+    {
+      "root": "c-old-resolved",
+      "state": "resolved",
+      "comments": [
+        "c-old-resolved"
+      ]
+    },
+    {
+      "root": "c-file-level",
+      "state": "open",
+      "comments": [
+        "c-file-level"
+      ]
+    },
+    {
+      "root": "c-drifted",
+      "state": "open",
+      "comments": [
+        "c-drifted"
+      ]
+    },
+    {
+      "root": "c-closed",
+      "state": "closed",
+      "comments": [
+        "c-closed"
+      ]
+    },
+    {
+      "root": "c-thread-1",
+      "state": "open",
+      "comments": [
+        "c-thread-1",
+        "c-thread-2"
+      ]
+    }
   ]
 }

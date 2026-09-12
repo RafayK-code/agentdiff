@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 from typing import Final
 
+from agentdiff.anchor import Thread, group_threads
 from agentdiff.model import Change, Comment, CommentState, FileDiff
 
 # R5. D6 policy (ARCHITECTURE.md §7): adding a field is a MINOR version bump;
@@ -92,6 +93,15 @@ def _comment_block(comment: Comment) -> dict[str, object]:
     }
 
 
+def _thread_block(thread: Thread) -> dict[str, object]:
+    """{root, state, comments} — one entry per reply thread. (R6)"""
+    return {
+        "root": thread.root.id,
+        "state": thread.state.value,
+        "comments": [member.id for member in thread.members],
+    }
+
+
 def export_json(
     change: Change, comments: list[Comment], *, include_closed: bool = False
 ) -> str:
@@ -105,5 +115,6 @@ def export_json(
         "schema_version": SCHEMA_VERSION,
         "change": _change_block(change),
         "comments": [_comment_block(c) for c in visible],
+        "threads": [_thread_block(t) for t in group_threads(visible)],
     }
     return json.dumps(doc, indent=2, ensure_ascii=True) + "\n"

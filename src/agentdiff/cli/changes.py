@@ -5,6 +5,7 @@ from typing import TextIO
 
 from agentdiff.cli.chains import group_by_branch
 from agentdiff.cli.common import add_root_option
+from agentdiff.cli.errors import CliError
 from agentdiff.model import Change
 from agentdiff.store import Store
 
@@ -20,6 +21,14 @@ def add_parser(
         "--branch",
         metavar="NAME",
         help="only show this branch's changes (default: all branches)",
+    )
+    p.add_argument(
+        "--revision",
+        "--commit",
+        dest="revision",
+        metavar="SHA",
+        help="find the change whose versions include this revision (commit SHA) "
+        "and print its id (accepts an abbreviated SHA)",
     )
     p.add_argument(
         "--include-closed",
@@ -51,8 +60,29 @@ def _change_line(change: Change, comment_count: int) -> str:
     )
 
 
+def _find_by_revision(changes_list: list[Change], revision: str) -> Change:
+    """The change whose versions include ``revision`` (exact or abbreviated)."""
+    matches = [
+        change
+        for change in changes_list
+        if any(
+            version.revision == revision or version.revision.startswith(revision)
+            for version in change.versions
+        )
+    ]
+    if not matches:
+        raise CliError(f"no change contains revision {revision!r}")
+    if len(matches) > 1:
+        ids = ", ".join(change.id for change in matches)
+        raise CliError(f"revision {revision!r} is ambiguous: matches {ids}")
+    return matches[0]
+
+
 def run(args: argparse.Namespace, store: Store, out: TextIO) -> int:
     changes_list = store.list_changes(branch=args.branch)
+    if args.revision is not None:
+        out.write(f"{_find_by_revision(changes_list, args.revision).id}\n")
+        return 0
     if not changes_list:
         out.write("No changes.\n")
         return 0

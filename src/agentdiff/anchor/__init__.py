@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import difflib
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 
 from agentdiff.model.types import (
     Change,
@@ -169,9 +171,68 @@ def thread_tip(comment: Comment, comments: Sequence[Comment]) -> Comment:
     return thread_members(comment, comments)[-1]
 
 
+class ThreadState(str, Enum):
+    """Derived status of a reply thread. (R1)"""
+
+    OPEN = "open"
+    RESOLVED = "resolved"
+    CLOSED = "closed"
+
+
+def thread_state_of(state: CommentState) -> ThreadState:
+    """Map a comment's own state to a thread state: ACTIVE/RESOLVED/CLOSED. (R1)"""
+    if state is CommentState.RESOLVED:
+        return ThreadState.RESOLVED
+    if state is CommentState.CLOSED:
+        return ThreadState.CLOSED
+    return ThreadState.OPEN
+
+
+@dataclass(frozen=True)
+class Thread:
+    """A reply thread: its root plus every member ordered root→tip. (R1)"""
+
+    root: Comment
+    members: tuple[Comment, ...]
+
+    @property
+    def root_id(self) -> str:
+        return self.root.id
+
+    @property
+    def state(self) -> ThreadState:
+        return thread_state_of(self.members[-1].state)
+
+    @property
+    def replies(self) -> tuple[Comment, ...]:
+        return tuple(member for member in self.members if member.id != self.root.id)
+
+
+def group_threads(comments: Sequence[Comment]) -> tuple[Thread, ...]:
+    """Group ``comments`` into reply threads, reusing the thread primitives. (R1)
+
+    An orphan reply whose parent is absent is its own root; threads follow the
+    first appearance of any member in ``comments``.
+    """
+    seen: set[str] = set()
+    threads: list[Thread] = []
+    for comment in comments:
+        root = thread_root(comment, comments)
+        if root.id in seen:
+            continue
+        seen.add(root.id)
+        threads.append(Thread(root=root, members=thread_members(root, comments)))
+    return tuple(threads)
+
+
+def thread_state(comment: Comment, comments: Sequence[Comment]) -> ThreadState:
+    """The derived status of ``comment``'s thread, via the existing tip. (R1)"""
+    return thread_state_of(thread_tip(comment, comments).state)
+
+
 def is_resolved_thread(comment: Comment, comments: Sequence[Comment]) -> bool:
-    """True when the last comment in the reply chain is a resolve comment. (R8)"""
-    return is_resolve_comment(thread_tip(comment, comments))
+    """True when the thread tip is RESOLVED (not CLOSED). (R8, R1, R2)"""
+    return thread_state(comment, comments) is ThreadState.RESOLVED
 
 
 def resolution_reply(
@@ -214,6 +275,9 @@ def resolution_reply(
 
 __all__ = [
     "RESOLVE_AUTHOR",
+    "Thread",
+    "ThreadState",
+    "group_threads",
     "is_resolve_comment",
     "is_resolved_thread",
     "reanchor",
@@ -223,5 +287,7 @@ __all__ = [
     "thread_members",
     "thread_root",
     "thread_root_id",
+    "thread_state",
+    "thread_state_of",
     "thread_tip",
 ]

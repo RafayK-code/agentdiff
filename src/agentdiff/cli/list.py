@@ -3,9 +3,10 @@ from __future__ import annotations
 import argparse
 from typing import TextIO
 
+from agentdiff.anchor import ThreadState, group_threads
 from agentdiff.cli.common import add_root_option
 from agentdiff.cli.errors import CliError
-from agentdiff.model import CommentState
+from agentdiff.model import Comment, CommentState
 from agentdiff.store import Store
 
 
@@ -20,7 +21,18 @@ def add_parser(
     p.add_argument(
         "--state",
         choices=[state.value.lower() for state in CommentState],
-        help="only this state's comments",
+        help="only this comment's own state (per-comment filter)",
+    )
+    p.add_argument(
+        "--threads",
+        action="store_true",
+        help="group into reply threads (status marker + indented replies)",
+    )
+    p.add_argument(
+        "--thread-state",
+        dest="thread_state",
+        choices=[state.value for state in ThreadState],
+        help="only threads with this derived status; implies --threads",
     )
     p.add_argument(
         "--include-closed",
@@ -39,6 +51,23 @@ def _state(value: str | None) -> CommentState | None:
         raise CliError(f"unknown comment state {value!r}") from exc
 
 
+def _format_comment(comment: Comment, *, show_reply: bool = True) -> str:
+    location = (
+        "file-level"
+        if comment.range is None
+        else f"{comment.range.side.value} {comment.range.start}-{comment.range.end}"
+    )
+    reply = (
+        f" in-reply-to={comment.in_reply_to}"
+        if show_reply and comment.in_reply_to
+        else ""
+    )
+    return (
+        f"{comment.id}  {comment.revision}  {comment.file}  {location}  "
+        f"[{comment.state.value}]{reply}  {comment.text}"
+    )
+
+
 def run(args: argparse.Namespace, store: Store, out: TextIO) -> int:
     comments = store.list_comments(
         args.change,
@@ -50,15 +79,19 @@ def run(args: argparse.Namespace, store: Store, out: TextIO) -> int:
     if not comments:
         out.write("No comments.\n")
         return 0
-    for comment in comments:
-        location = (
-            "file-level"
-            if comment.range is None
-            else f"{comment.range.side.value} {comment.range.start}-{comment.range.end}"
-        )
-        reply = f" in-reply-to={comment.in_reply_to}" if comment.in_reply_to else ""
-        out.write(
-            f"{comment.id}  {comment.revision}  {comment.file}  {location}  "
-            f"[{comment.state.value}]{reply}  {comment.text}\n"
-        )
+    if not (args.threads or args.thread_state is not None):
+        for comment in comments:
+            out.write(_format_comment(comment) + "\n")
+        return 0
+    threads = group_threads(comments)
+    if args.thread_state is not None:
+        threads = tuple(t for t in threads if t.state.value == args.thread_state)
+    if not threads:
+        out.write("No threads.\n")
+        return 0
+    for thread in threads:
+        root_line = _format_comment(thread.root, show_reply=False)
+        out.write(f"[{thread.state.value}] {root_line}\n")
+        for reply in thread.replies:
+            out.write(f"  {_format_comment(reply)}\n")
     return 0

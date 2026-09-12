@@ -7,6 +7,8 @@ from enum import Enum
 
 from agentdiff.anchor import (
     RESOLVE_AUTHOR,
+    ThreadState,
+    group_threads,
     is_resolve_comment,
     is_resolved_thread,
     reopen_reply,
@@ -508,22 +510,18 @@ def comment_counts(
     pool.extend(pending.items)
     pending_ids = {comment.id for comment in pending.items}
 
-    threads: dict[str, list[Comment]] = {}
-    for comment in pool:
-        threads.setdefault(thread_root_id(comment, pool), []).append(comment)
-
     draft: dict[str, int] = {}
     resolved: dict[str, int] = {}
     unresolved: dict[str, int] = {}
     for comment in pending.items:
         draft[comment.file] = draft.get(comment.file, 0) + 1
-    for members in threads.values():
-        latest = max(members, key=lambda item: (item.created_at, item.id))
+    for thread in group_threads(pool):
+        latest = thread.members[-1]
         if latest.id in pending_ids:
             continue
-        if latest.state is CommentState.RESOLVED:
+        if thread.state is ThreadState.RESOLVED:
             resolved[latest.file] = resolved.get(latest.file, 0) + 1
-        elif latest.state is CommentState.ACTIVE:
+        elif thread.state is ThreadState.OPEN:
             unresolved[latest.file] = unresolved.get(latest.file, 0) + 1
 
     files = set(draft) | set(resolved) | set(unresolved)

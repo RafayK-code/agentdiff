@@ -97,3 +97,31 @@ def test_changes_bad_root_error(
     assert captured.out == ""
     assert captured.err.startswith("agentdiff: ")
     assert "not a directory" in captured.err
+
+
+def test_changes_lookup_by_revision(
+    capsys: pytest.CaptureFixture[str],
+    canonical_store: CanonicalStore,
+) -> None:
+    root = canonical_store.root
+    expected = {"9c7d0e1": "chg-aaa", "d4e5f6a": "chg-bbb"}
+    for revision, change_id in expected.items():
+        for flag in ("--revision", "--commit"):
+            rc = main(["changes", flag, revision, "--root", str(root)])
+            captured = capsys.readouterr()
+            assert rc == 0
+            assert captured.err == ""
+            assert captured.out == f"{change_id}\n"
+
+
+def test_changes_lookup_by_revision_unknown(
+    capsys: pytest.CaptureFixture[str],
+    canonical_store: CanonicalStore,
+) -> None:
+    rc = main(
+        ["changes", "--revision", "deadbeef", "--root", str(canonical_store.root)]
+    )
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert captured.out == ""
+    assert "no change contains revision" in captured.err
