@@ -110,6 +110,33 @@ def test_load_shell_state_success_round_trips_through_store(tmp_path: Path) -> N
     assert stored.head_revision == HEAD_SHA
 
 
+def test_load_shell_state_reflects_all_versions_after_amend(tmp_path: Path) -> None:
+    # A prior version is already stored (the pre-amend head); ingesting the new
+    # head must surface BOTH versions to the TUI, not just the freshly-diffed one.
+    expected_id = stable_change_id("main", PARENT_SHA)
+    store = create_store(tmp_path)
+    store.save_change(
+        Change(
+            id=expected_id,
+            branch="main",
+            base_revision=PARENT_SHA,
+            versions=[make_version("old-head", "basic.patch")],
+        )
+    )
+
+    state = load_shell_state(
+        tmp_path, runner=FakeGit(_success_responses()), store=store
+    )
+
+    assert state.status is ShellStatus.READY
+    assert state.change is not None
+    assert [version.revision for version in state.change.versions] == [
+        "old-head",
+        HEAD_SHA,
+    ]
+    assert state.version_index == 1
+
+
 def test_load_shell_state_unborn_head_is_error(tmp_path: Path) -> None:
     argv = ("git", "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
     fake = FakeGit(

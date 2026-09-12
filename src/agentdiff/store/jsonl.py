@@ -226,8 +226,6 @@ class JsonlStore:
         stored = comments[index]
         if stored.change_id != comment.change_id:
             raise StoreError(f"comment {comment.id!r} cannot move to another change")
-        if stored.revision != comment.revision:
-            raise StoreError(f"comment {comment.id!r} cannot move to another revision")
         updated = comment.model_copy(update={"updated_at": self._now_utc()})
         new_comments = list(comments)
         new_comments[index] = updated

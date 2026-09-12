@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from tests.diff.conftest import load_fixture
 
-from agentdiff.anchor import reanchor, reopen_reply
+from agentdiff.anchor import reanchor, reanchor_thread, reopen_reply
 from agentdiff.diff.parse import parse_unified_diff
 from agentdiff.model import (
     Change,
@@ -214,3 +214,60 @@ def test_reopen_reply() -> None:
     assert ranged.state is CommentState.RESOLVED
     assert lost.state is CommentState.RESOLVED
     assert file_level.state is CommentState.RESOLVED
+
+
+def test_reanchor_thread_moves_all_members_to_one_anchor() -> None:
+    v1 = _v1()
+    v2 = Version(
+        revision="rev-2",
+        files=[
+            FileDiff(
+                path="src/foo.py",
+                hunks=[
+                    Hunk(
+                        old_start=10,
+                        old_count=2,
+                        new_start=10,
+                        new_count=3,
+                        lines=[
+                            Line(kind="ctx", old_no=10, new_no=10, text="ctx1"),
+                            Line(kind="add", old_no=None, new_no=11, text="added"),
+                            Line(kind="ctx", old_no=11, new_no=12, text="ctx2"),
+                        ],
+                    )
+                ],
+            )
+        ],
+    )
+    change = Change(id="chg-s", versions=[v1, v2])
+
+    root = _comment(
+        revision="rev-1",
+        line_range=LineRange(side=Side.NEW, start=1, end=3),
+        snapshot=["ctx1", "added", "ctx2"],
+        state=CommentState.RESOLVED,
+        id="c-root",
+    )
+    reply = _comment(
+        revision="rev-1",
+        line_range=LineRange(side=Side.NEW, start=1, end=3),
+        state=CommentState.RESOLVED,
+        id="c-reply",
+    ).model_copy(update={"in_reply_to": "c-root"})
+    tip = _comment(
+        revision="rev-2",
+        line_range=LineRange(side=Side.NEW, start=10, end=12),
+        state=CommentState.ACTIVE,
+        id="c-tip",
+    ).model_copy(update={"in_reply_to": "c-reply"})
+
+    updates = reanchor_thread(root, change, [root, reply, tip])
+    updated = {comment.id: comment for comment in updates}
+
+    anchor = LineRange(side=Side.NEW, start=10, end=12)
+    assert updated["c-root"].range == anchor
+    assert updated["c-reply"].range == anchor
+    assert "c-tip" not in updated  # already at the anchor
+    # the originals are untouched (updates are copies)
+    assert root.range == LineRange(side=Side.NEW, start=1, end=3)
+    assert reply.range == LineRange(side=Side.NEW, start=1, end=3)

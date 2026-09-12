@@ -113,13 +113,19 @@ def test_comment_view_partitions_and_threads() -> None:
         range=LineRange(side=Side.NEW, start=2, end=2),
     )
 
-    view = build_comment_view([root, reply, orphan, stale, resolved, closed], change)
+    comments = [root, reply, orphan, stale, resolved, closed]
+    view = build_comment_view(comments, change)
 
     assert {t.comment.id for t in view.inline} == {"c-root", "c-orphan"}
     assert {t.comment.id: t for t in view.inline}["c-root"].replies == (reply,)
     assert [t.replies for t in view.inline if t.comment.id == "c-orphan"] == [()]
-    assert [c.id for c in view.resolved] == ["c-resolved"]
+    # rev-1 comments stay on rev-1 and do not leak onto the rev-2 view
+    assert [c.id for c in view.resolved] == []
     assert [c.id for c in view.hidden] == ["c-closed"]
+
+    rev1 = build_comment_view(comments, change, "rev-1")
+    assert {t.comment.id for t in rev1.inline} == {"c-stale"}
+    assert [c.id for c in rev1.resolved] == ["c-resolved"]
 
 
 def test_resolve_appends_resolved_reply() -> None:
@@ -713,4 +719,5 @@ def test_comment_counts_are_conversation_level() -> None:
     counts = comment_counts(view, pending)
 
     assert counts["src/foo.py"] == FileCommentCounts(draft=2, resolved=1, unresolved=1)
-    assert counts["new.txt"] == FileCommentCounts(draft=0, resolved=1, unresolved=0)
+    # rev-1 comments are scoped out of the rev-2 view, so new.txt has no counts
+    assert counts.get("new.txt", FileCommentCounts()) == FileCommentCounts()

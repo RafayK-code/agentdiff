@@ -468,11 +468,11 @@ def test_update_semantics(tmp_path: Path, change: Change) -> None:
     store.add_comment(
         comment_factory(_two_version_change(), id="c-1", revision="rev-2")
     )
-    with pytest.raises(StoreError):
-        store.update_comment(
-            comment_factory(_two_version_change(), id="c-1", revision="rev-1")
-        )
-    assert store.get_comment("c-1").revision == "rev-2"
+    # reanchoring may move a comment to another version (a reopen moves the thread)
+    store.update_comment(
+        comment_factory(_two_version_change(), id="c-1", revision="rev-1")
+    )
+    assert store.get_comment("c-1").revision == "rev-1"
 
     store = create_store(tmp_path / "drifted")
     store.save_change(change)

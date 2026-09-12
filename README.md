@@ -95,14 +95,19 @@ agentdiff list --change ID --threads                    # group into reply threa
 agentdiff list --change ID --thread-state resolved      # only resolved threads
 agentdiff export --change ID      # export comments (markdown default, or --format json)
 agentdiff add ...                 # author a comment or reply
-agentdiff resolve ID              # mark addressed (appends a RESOLVED reply)
-agentdiff reopen ID               # reopen as a reply on the current version
-agentdiff close ID                # human verdict — sets CLOSED (hidden by default)
+agentdiff resolve <thread-id>     # resolve a thread (thread-id = threads[].root)
+agentdiff reopen <thread-id>      # reopen a thread as a reply on the current version
+agentdiff close <thread-id>       # human verdict — close the whole thread (hidden by default)
 ```
 
 All commands accept `--root PATH` (the repo containing `.agentdiff/`, default
 cwd). `list`, `export`, and `changes` hide `CLOSED` comments unless you pass
 `--include-closed`.
+
+`resolve`, `reopen`, and `close` operate on a **thread**, identified by its
+**root comment id** — the `root` field in the export's `threads` array. Passing
+a non-root id is an error. (`add` authors individual comments/replies; it is the
+only command that creates new comments, and only on the current version.)
 
 `list --threads` prints each reply thread with a derived status marker
 (`[open]` / `[resolved]` / `[closed]`) and its replies indented. `--thread-state`
@@ -137,9 +142,9 @@ agentdiff add src/foo.py --lines 300-364 --message "Extract this into a helper"
 # Reply to an existing comment
 agentdiff add src/foo.py --in-reply-to c-abc123 --message "Done in the new helper"
 
-# Resolve (agent) and later close (human)
-agentdiff resolve c-abc123
-agentdiff close c-abc123
+# Resolve (agent) and later close (human) — both take the thread's root id
+agentdiff resolve c-root123
+agentdiff close c-root123
 ```
 
 ## JSON export (the agent contract)
@@ -199,12 +204,12 @@ agentdiff export --format json
 
 That returns the line-anchored comments for the current change. Work from the
 top-level **`threads`** array: address the comments in each thread whose
-`state` is `open` (`file` + `lines` + `side`), then `resolve` it. Don't rely on
-a comment's own `state` — resolving appends a `RESOLVED` reply and leaves the
-root `ACTIVE`, so a thread's `state` is what tells you whether it's done. From
-the shell, `agentdiff list --thread-state open` gives the same view. The human
-reviews and `close`s. A live MCP server (`agentdiff serve-mcp`) is on the
-roadmap.
+`state` is `open` (`file` + `lines` + `side`), then resolve the thread by its
+`root` id (`agentdiff resolve <root>`). Don't rely on a comment's own `state` —
+resolving appends a `RESOLVED` reply and leaves the root `ACTIVE`, so a thread's
+`state` is what tells you whether it's done. From the shell,
+`agentdiff list --thread-state open` gives the same view. The human reviews and
+`close`s. A live MCP server (`agentdiff serve-mcp`) is on the roadmap.
 
 ## Development
 

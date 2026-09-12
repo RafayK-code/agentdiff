@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -86,19 +86,22 @@ def test_cli_write_commands(capsys: pytest.CaptureFixture[str], tmp_path: Path) 
     captured = capsys.readouterr()
     assert rc == 0
     assert captured.err == ""
+    # the reopen reply attaches to the thread tip (the RESOLVED reply), not the root
     reply = next(
         c
         for c in store.list_comments("chg-s")
-        if c.in_reply_to == added_id and c.state is CommentState.ACTIVE
+        if c.in_reply_to == resolved_reply.id and c.state is CommentState.ACTIVE
     )
     assert reply.revision == "rev-1"
     assert store.get_comment(added_id).state is CommentState.ACTIVE
     reply_id = reply.id
 
-    rc = main(["close", reply_id, "--root", str(root)])
+    # close takes a thread root and closes the whole thread
+    rc = main(["close", added_id, "--root", str(root)])
     captured = capsys.readouterr()
     assert rc == 0
     assert captured.err == ""
+    assert store.get_comment(added_id).state is CommentState.CLOSED
     assert store.get_comment(reply_id).state is CommentState.CLOSED
     assert reply_id not in [c.id for c in store.list_comments("chg-s")]
     assert reply_id in [c.id for c in store.list_comments("chg-s", include_closed=True)]
@@ -213,3 +216,70 @@ def test_cli_read_surface(capsys: pytest.CaptureFixture[str], tmp_path: Path) ->
     assert rc == 0
     assert captured.err == ""
     assert "c-new" in captured.out
+
+
+def test_resolve_attaches_to_thread_tip(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    root = tmp_path / "store"
+    store = create_store(root)
+    store.save_change(
+        Change(
+            id="chg-s",
+            branch="feat/x",
+            versions=[Version(revision="rev-1", files=_basic_files())],
+        )
+    )
+    store.add_comment(
+        comment_factory(
+            "c-root",
+            revision="rev-1",
+            range=LineRange(side=Side.NEW, start=1, end=1),
+        )
+    )
+    store.add_comment(
+        comment_factory(
+            "c-reply",
+            revision="rev-1",
+            range=LineRange(side=Side.NEW, start=1, end=1),
+            in_reply_to="c-root",
+            created_at=datetime(2024, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=1),
+        )
+    )
+
+    rc = main(["resolve", "c-root", "--root", str(root)])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.err == ""
+
+    resolution = next(
+        comment
+        for comment in store.list_comments("chg-s")
+        if comment.state is CommentState.RESOLVED
+    )
+    # the resolution attaches to the thread tip, not the id that was passed
+    assert resolution.in_reply_to == "c-reply"
+
+
+def test_thread_commands_reject_non_root(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    root_dir = tmp_path / "store"
+    store = create_store(root_dir)
+    store.save_change(
+        Change(id="chg-s", versions=[make_version("rev-1", "basic.patch")])
+    )
+    store.add_comment(comment_factory("c-root", revision="rev-1"))
+    store.add_comment(
+        comment_factory(
+            "c-reply",
+            revision="rev-1",
+            in_reply_to="c-root",
+            created_at=datetime(2024, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=1),
+        )
+    )
+    for command in ("resolve", "reopen", "close"):
+        rc = main([command, "c-reply", "--root", str(root_dir)])
+        captured = capsys.readouterr()
+        assert rc == 1
+        assert "not a thread root" in captured.err

@@ -11,6 +11,7 @@ from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.events import Click, Key, Resize, TextSelected
 from textual.widgets import Button, Footer, Input, Label, ListItem, ListView, Static
 
+from agentdiff.anchor import reanchor_thread
 from agentdiff.model.types import Comment, LineRange, Side
 from agentdiff.store import Store, StoreError, create_store
 from agentdiff.tui.comments import (
@@ -245,9 +246,10 @@ class AgentdiffApp(App[None]):
 
     def _build_comment_view(self) -> CommentView:
         change = self._state.change
-        if change is None:
+        version = selected_version(self._state)
+        if change is None or version is None:
             return CommentView(inline=(), resolved=(), hidden=())
-        return build_comment_view(self._comments, change)
+        return build_comment_view(self._comments, change, version.revision)
 
     def _current_file_path(self) -> str | None:
         version = selected_version(self._state)
@@ -314,7 +316,12 @@ class AgentdiffApp(App[None]):
     def _refresh_files(self) -> None:
         files = self.query_one("#files", ListView)
         files.clear()
-        counts = comment_counts(self._view_state, self._pending)
+        version = selected_version(self._state)
+        counts = comment_counts(
+            self._view_state,
+            self._pending,
+            revision=version.revision if version is not None else None,
+        )
         for entry in self._state.files:
             entry_counts = counts.get(entry.path, FileCommentCounts())
             counts_text = Text()
@@ -349,9 +356,15 @@ class AgentdiffApp(App[None]):
             return
         base = render_view(self._view, self._view_mode)
         path = self._current_file_path()
+        version = selected_version(self._state)
         annotations = (
-            inline_annotations(self._view_state, self._pending, path)
-            if path is not None and is_current_version(self._state)
+            inline_annotations(
+                self._view_state,
+                self._pending,
+                path,
+                revision=version.revision if version is not None else None,
+            )
+            if path is not None
             else ()
         )
         annotated = annotate(base, annotations)
@@ -685,6 +698,7 @@ class AgentdiffApp(App[None]):
         self._selection = Selection()
         self._range_mode = False
         self._view = self._build_view(self._state.selected)
+        self._view_state = self._build_comment_view()
         self._selected_line = 0
         self._refresh_header()
         self._refresh_files()
@@ -728,7 +742,9 @@ class AgentdiffApp(App[None]):
         self._open_editor(new_draft(path, line_range))
 
     def action_reply(self) -> None:
-        if not self._can_author():
+        # Replying is allowed on any version (it is how you reopen a resolved
+        # thread); only *new* comments are restricted to the current version.
+        if self._view is None or self._state.change is None:
             return
         comment = self._selected_comment()
         change = self._state.change
@@ -738,9 +754,17 @@ class AgentdiffApp(App[None]):
             return
         pool = self._pool()
         if is_resolved_thread(comment, pool):
-            self._open_editor(
-                reopen_draft(comment, pool, change, author=DEFAULT_AUTHOR)
-            )
+            draft = reopen_draft(comment, pool, change, author=DEFAULT_AUTHOR)
+            if self._store is not None:
+                for member in reanchor_thread(
+                    comment, change, pool, anchor=draft.anchor
+                ):
+                    try:
+                        self._store.update_comment(member)
+                    except StoreError:
+                        break
+                self._reload_comments()
+            self._open_editor(draft)
             return
         self._open_editor(reply_draft(thread_tip(comment, pool)))
 
@@ -768,8 +792,8 @@ class AgentdiffApp(App[None]):
         self._reload_comments()
 
     def action_close_comment(self) -> None:
-        if not self._can_author():
-            return
+        # Closing is allowed on any version (like replying/reopening); only
+        # *new* comments are restricted to the current version.
         comment = self._selected_comment()
         if comment is None or self._store is None:
             self._status = "select a comment to close"

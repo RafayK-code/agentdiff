@@ -171,6 +171,36 @@ def thread_tip(comment: Comment, comments: Sequence[Comment]) -> Comment:
     return thread_members(comment, comments)[-1]
 
 
+def reanchor_thread(
+    comment: Comment,
+    change: Change,
+    comments: Sequence[Comment],
+    *,
+    anchor: LineRange | None = None,
+) -> list[Comment]:
+    """Reanchor ``comment``'s whole thread onto the current version.
+
+    The thread moves as a unit: every member takes the same anchor, so the chain
+    renders as one connected block instead of splitting across versions (the
+    root stayed on v1 while only the reply moved to v2). ``anchor`` defaults to
+    re-anchoring the thread root; the reopen flow passes the reply's anchor so
+    the reply and its thread agree. Members already at the anchor are omitted.
+    The comment's ``revision`` is never changed.
+    """
+    current = change.current
+    if current is None:
+        return []
+    if anchor is None:
+        anchor = reanchor(thread_root(comment, comments), current)
+    if anchor is None:
+        return []
+    return [
+        member.model_copy(update={"range": anchor, "revision": current.revision})
+        for member in thread_members(comment, comments)
+        if member.range != anchor or member.revision != current.revision
+    ]
+
+
 class ThreadState(str, Enum):
     """Derived status of a reply thread. (R1)"""
 
@@ -281,6 +311,7 @@ __all__ = [
     "is_resolve_comment",
     "is_resolved_thread",
     "reanchor",
+    "reanchor_thread",
     "reopen_reply",
     "resolution_reply",
     "snapshot_lines",

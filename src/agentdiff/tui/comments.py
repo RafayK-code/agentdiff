@@ -237,12 +237,23 @@ class CommentView:
     hidden: tuple[Comment, ...]
 
 
-def build_comment_view(comments: Sequence[Comment], change: Change) -> CommentView:
-    head = change.head_revision
+def build_comment_view(
+    comments: Sequence[Comment],
+    change: Change,
+    revision: str | None = None,
+) -> CommentView:
+    """Partition comments for the version being viewed.
+
+    Only comments that belong to ``revision`` (default: the current version)
+    are inline/resolved — resolved comments stay on the version they were made
+    on and do not leak onto newer versions. (Feedback 5)
+    """
+    if revision is None:
+        revision = change.head_revision
     inline_comments = [
         comment
         for comment in comments
-        if comment.state is CommentState.ACTIVE and comment.revision == head
+        if comment.state is CommentState.ACTIVE and comment.revision == revision
     ]
     inline_ids = {comment.id for comment in inline_comments}
     replies_by_parent: dict[str, list[Comment]] = {}
@@ -260,10 +271,14 @@ def build_comment_view(comments: Sequence[Comment], change: Change) -> CommentVi
         for root in roots
     )
     resolved = tuple(
-        comment for comment in comments if comment.state is CommentState.RESOLVED
+        comment
+        for comment in comments
+        if comment.state is CommentState.RESOLVED and comment.revision == revision
     )
     hidden = tuple(
-        comment for comment in comments if comment.state is CommentState.CLOSED
+        comment
+        for comment in comments
+        if comment.state is CommentState.CLOSED and comment.revision == revision
     )
     return CommentView(inline=inline, resolved=resolved, hidden=hidden)
 
@@ -324,7 +339,11 @@ def _threaded(pool: Sequence[Comment]) -> list[Comment]:
 
 
 def inline_annotations(
-    view: CommentView, pending: PendingBuffer, file: str
+    view: CommentView,
+    pending: PendingBuffer,
+    file: str,
+    *,
+    revision: str | None = None,
 ) -> tuple[CommentAnnotation, ...]:
     pool: list[Comment] = []
     for thread in view.inline:
@@ -332,7 +351,11 @@ def inline_annotations(
             pool.append(thread.comment)
         pool.extend(reply for reply in thread.replies if reply.file == file)
     pool.extend(comment for comment in view.resolved if comment.file == file)
-    pool.extend(comment for comment in pending.items if comment.file == file)
+    pool.extend(
+        comment
+        for comment in pending.items
+        if comment.file == file and (revision is None or comment.revision == revision)
+    )
     if not pool:
         return ()
     by_id = {comment.id: comment for comment in pool}
@@ -494,26 +517,35 @@ class FileCommentCounts:
 
 
 def comment_counts(
-    view: CommentView, pending: PendingBuffer
+    view: CommentView,
+    pending: PendingBuffer,
+    *,
+    revision: str | None = None,
 ) -> dict[str, FileCommentCounts]:
     """Per-file draft / resolved / unresolved counts. Pure. (Feedback 3)
 
     ``draft`` counts pending comments; ``resolved`` / ``unresolved`` count
     conversations by their latest member. A conversation with a newer pending
-    reply is a draft, not resolved.
+    reply is a draft, not resolved. Counts are scoped to ``revision`` (the
+    version in view) so they follow version navigation.
     """
+    pending_items = [
+        comment
+        for comment in pending.items
+        if revision is None or comment.revision == revision
+    ]
     pool: list[Comment] = []
     for thread in view.inline:
         pool.append(thread.comment)
         pool.extend(thread.replies)
     pool.extend(view.resolved)
-    pool.extend(pending.items)
-    pending_ids = {comment.id for comment in pending.items}
+    pool.extend(pending_items)
+    pending_ids = {comment.id for comment in pending_items}
 
     draft: dict[str, int] = {}
     resolved: dict[str, int] = {}
     unresolved: dict[str, int] = {}
-    for comment in pending.items:
+    for comment in pending_items:
         draft[comment.file] = draft.get(comment.file, 0) + 1
     for thread in group_threads(pool):
         latest = thread.members[-1]

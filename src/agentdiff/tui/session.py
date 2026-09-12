@@ -75,6 +75,9 @@ def load_shell_state(
     active_store = store if store is not None else create_store(root)
     try:
         active_store.save_change(change)
+        merged = active_store.load_change(change.id)
+        if merged is not None:
+            change = merged
         comments = load_comments(active_store, change.id)
     except StoreError as exc:
         return error_state(f"store error: {exc}")
