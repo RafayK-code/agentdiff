@@ -171,6 +171,102 @@ def test_file_level_comment_nulls(approved_change) -> None:
         assert key in exported
 
 
+def test_export_context_projects_stored_snapshot() -> None:
+    now = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    change = Change(
+        id="chg-s",
+        versions=[
+            Version(
+                revision="rev-1",
+                files=parse_unified_diff(load_fixture("basic.patch")).files,
+            )
+        ],
+    )
+    old = Comment(
+        id="c-old",
+        change_id="chg-s",
+        revision="rev-1",
+        file="src/foo.py",
+        range=LineRange(side=Side.OLD, start=2, end=2),
+        text="old side",
+        author="alice",
+        state=CommentState.ACTIVE,
+        created_at=now,
+        updated_at=now,
+        anchor_snapshot=["SNAPSHOT-ONLY"],
+    )
+    new = Comment(
+        id="c-new",
+        change_id="chg-s",
+        revision="rev-1",
+        file="src/foo.py",
+        range=LineRange(side=Side.NEW, start=2, end=2),
+        text="new side",
+        author="alice",
+        state=CommentState.ACTIVE,
+        created_at=now,
+        updated_at=now,
+        anchor_snapshot=["added"],
+    )
+
+    doc = json.loads(export_json(change, [old, new]))
+    blocks = {c["id"]: c for c in doc["comments"]}
+
+    assert blocks["c-old"]["context"] == ["SNAPSHOT-ONLY"]
+    assert blocks["c-new"]["context"] == ["added"]
+    assert blocks["c-old"]["side"] == "OLD"
+    assert blocks["c-old"]["lines"] == [2, 2]
+    assert list(blocks["c-old"].keys()) == [
+        "id",
+        "revision",
+        "file",
+        "side",
+        "lines",
+        "context",
+        "text",
+        "author",
+        "in_reply_to",
+        "state",
+        "drifted",
+        "created_at",
+    ]
+    assert doc["schema_version"] == "1.0.0"
+
+
+def test_export_context_file_level_empty() -> None:
+    now = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    change = Change(
+        id="chg-s",
+        versions=[
+            Version(
+                revision="rev-1",
+                files=parse_unified_diff(load_fixture("basic.patch")).files,
+            )
+        ],
+    )
+    file_level = Comment(
+        id="c-file",
+        change_id="chg-s",
+        revision="rev-1",
+        file="src/foo.py",
+        range=None,
+        text="file note",
+        author="alice",
+        state=CommentState.ACTIVE,
+        created_at=now,
+        updated_at=now,
+        anchor_snapshot=[],
+    )
+
+    out = export_json(change, [file_level])
+    block = json.loads(out)["comments"][0]
+
+    assert block["context"] == []
+    assert block["side"] is None
+    assert block["lines"] is None
+    assert '"context": []' in out
+
+
 def test_export_json_real_drifted(approved_change) -> None:
     comments = [
         comment_factory(id="c-active-drift", state=CommentState.ACTIVE, drifted=True),

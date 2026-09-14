@@ -12,7 +12,7 @@ from textual.events import Click, Key, Resize, TextSelected
 from textual.widgets import Button, Footer, Input, Label, ListItem, ListView, Static
 
 from agentdiff.anchor import reanchor_thread
-from agentdiff.model.types import Comment, LineRange, Side
+from agentdiff.model.types import Comment, Side
 from agentdiff.store import Store, StoreError, create_store
 from agentdiff.tui.comments import (
     DEFAULT_AUTHOR,
@@ -45,6 +45,7 @@ from agentdiff.tui.comments import (
     select_line,
     selection_range,
     set_draft_text,
+    step_to_compatible,
     thread_members,
     thread_rows,
     thread_tip,
@@ -60,7 +61,7 @@ from agentdiff.tui.render import (
     expand_all_view,
     expand_view,
     line_index,
-    line_number,
+    line_side,
     make_diff_view,
     next_hunk,
     prev_hunk,
@@ -402,17 +403,17 @@ class AgentdiffApp(App[None]):
         self.query_one("#status", Static).update("  ".join(parts))
 
     def _sync_selection(self) -> None:
-        number = self._line_number()
+        index = self._selected_line
+        side = self._side_at(index)
         if self._range_mode:
-            if number is not None:
-                self._selection = extend_to(self._selection, number)
+            self._selection = extend_to(self._selection, index, side)
         else:
-            self._selection = select_line(self._selection, number)
+            self._selection = select_line(self._selection, index, side)
 
-    def _line_number(self) -> int | None:
-        if self._rendered is None or self._selected_line >= len(self._rendered.lines):
+    def _side_at(self, index: int) -> Side | None:
+        if self._rendered is None or not 0 <= index < len(self._rendered.lines):
             return None
-        return line_number(self._rendered.lines[self._selected_line], Side.NEW)
+        return line_side(self._rendered.lines[index])
 
     def _pane_width(self) -> int:
         pane = self.query_one("#diff-pane", ScrollableContainer)
@@ -433,18 +434,6 @@ class AgentdiffApp(App[None]):
                 text.stylize(self._style_for(index), start, end)
         self.query_one("#diff", Static).update(text, layout=layout)
 
-    def _display_span(self, rendered: RenderedDiff, line_range: LineRange) -> list[int]:
-        index = line_index(rendered, line_range.side)
-        positions = [
-            index[number]
-            for number in (line_range.start, line_range.end)
-            if number in index
-        ]
-        if not positions:
-            return []
-        low, high = min(positions), max(positions)
-        return list(range(low, high + 1))
-
     def _highlight_indices(self) -> list[int]:
         if self._rendered is None:
             return []
@@ -453,10 +442,14 @@ class AgentdiffApp(App[None]):
             rows = thread_rows(self._comment_rows, comment, self._pool())
             if rows:
                 return list(rows)
-        line_range = selection_range(self._selection) if self._range_mode else None
-        if line_range is None:
-            return [self._selected_line]
-        return self._display_span(self._rendered, line_range) or [self._selected_line]
+        if (
+            self._range_mode
+            and self._selection.anchor is not None
+            and self._selection.cursor is not None
+        ):
+            low, high = sorted((self._selection.anchor, self._selection.cursor))
+            return list(range(low, high + 1))
+        return [self._selected_line]
 
     def _pool(self) -> list[Comment]:
         return [*self._comments, *self._pending.items]
@@ -474,7 +467,14 @@ class AgentdiffApp(App[None]):
     def _move_line(self, delta: int) -> None:
         if self._rendered is None or not self._rendered.lines:
             return
-        target = _clamp(self._selected_line + delta, len(self._rendered.lines))
+        if self._range_mode:
+            target = step_to_compatible(
+                self._rendered, self._selected_line, delta, self._selection.side
+            )
+            if target is None:
+                return
+        else:
+            target = _clamp(self._selected_line + delta, len(self._rendered.lines))
         if target == self._selected_line:
             return
         self._selected_line = target
@@ -724,8 +724,9 @@ class AgentdiffApp(App[None]):
 
     def action_toggle_range(self) -> None:
         self._range_mode = not self._range_mode
-        if self._range_mode:
-            self._selection = select_line(self._selection, self._line_number())
+        self._selection = select_line(
+            self._selection, self._selected_line, self._side_at(self._selected_line)
+        )
         self._status = "range selection on" if self._range_mode else "range off"
         self._refresh_status()
         self._paint(layout=False)
@@ -734,11 +735,19 @@ class AgentdiffApp(App[None]):
         if not self._can_author():
             return
         path = self._current_file_path()
-        line_range = selection_range(self._selection)
+        line_range = (
+            selection_range(self._rendered, self._selection)
+            if self._rendered is not None
+            else None
+        )
         if path is None or line_range is None:
             self._status = "select a line to comment on"
             self._refresh_status()
             return
+        self._range_mode = False
+        self._selection = select_line(
+            self._selection, self._selected_line, self._side_at(self._selected_line)
+        )
         self._open_editor(new_draft(path, line_range))
 
     def action_reply(self) -> None:
@@ -929,6 +938,15 @@ class AgentdiffApp(App[None]):
             self._close_editor()
             self._status = "draft cancelled"
             self._refresh_status()
+            return
+        if self._range_mode:
+            self._range_mode = False
+            self._selection = select_line(
+                self._selection, self._selected_line, self._side_at(self._selected_line)
+            )
+            self._status = "range off"
+            self._refresh_status()
+            self._paint(layout=False)
 
     def on_resize(self, event: Resize) -> None:
         self._paint()

@@ -6,6 +6,7 @@ from agentdiff.diff.parse import parse_unified_diff
 from agentdiff.model.types import FileDiff, Hunk, Line, Side
 from agentdiff.tui.render import (
     CellKind,
+    DisplayLine,
     RowKind,
     ViewMode,
     build_rows,
@@ -15,6 +16,7 @@ from agentdiff.tui.render import (
     intra_line_spans,
     line_index,
     line_number,
+    line_side,
     make_diff_view,
     next_hunk,
     prev_hunk,
@@ -124,6 +126,31 @@ def test_build_rows_pairs_del_add_and_layout_emits_unified_gutters() -> None:
         added.columns[0].text,
     ) == (CellKind.ADD, (None, 2), "added")
     assert (ctx2.columns[0].gutters, ctx2.columns[0].text) == ((3, 3), "ctx2")
+
+
+def test_line_side_maps_line_kind() -> None:
+    file = parse_unified_diff(load_fixture("basic.patch")).files[0]
+    rendered = render_view(
+        make_diff_view(
+            file,
+            header="[modified] src/foo.py",
+            content=FileContent(side=Side.NEW, lines=("ctx1", "added", "ctx2")),
+        )
+    )
+    header = DisplayLine(kind=RowKind.FILE_HEADER, text="hdr")
+    hunk = DisplayLine(kind=RowKind.HUNK_HEADER, text="@@")
+    skip = DisplayLine(kind=RowKind.SKIP, text="\u2026")
+    note = DisplayLine(kind=RowKind.NOTE, text="(binary file)")
+    comment_row = DisplayLine(kind=RowKind.COMMENT, text="alice: t")
+
+    assert line_side(rendered.lines[2]) is None
+    assert line_side(rendered.lines[3]) is Side.OLD
+    assert line_side(rendered.lines[4]) is Side.NEW
+    assert line_side(header) is None
+    assert line_side(hunk) is None
+    assert line_side(skip) is None
+    assert line_side(note) is None
+    assert line_side(comment_row) is None
 
 
 def test_line_index_and_line_number_map_unified_coordinates() -> None:

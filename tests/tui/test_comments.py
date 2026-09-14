@@ -53,12 +53,16 @@ from agentdiff.tui.comments import (
     remove_pending,
     reopen_draft,
     reply_draft,
+    resolve_side,
     select_line,
     selection_range,
     set_draft_text,
+    side_compatible,
+    step_to_compatible,
     thread_rows,
 )
 from agentdiff.tui.render import (
+    CellKind,
     FileContent,
     RowKind,
     make_diff_view,
@@ -312,23 +316,152 @@ def test_reopen_draft_reanchors_or_drifts_and_attaches_to_tip() -> None:
     assert root.state is CommentState.RESOLVED
 
 
-def test_selection_collapses_and_extends() -> None:
-    base = Selection()
-    single = select_line(base, 5)
-    back = extend_to(single, 3)
-    forward = extend_to(single, 9)
-    cleared = select_line(single, None)
-
-    assert base.anchor is None and base.cursor is None and selection_range(base) is None
-    assert single.anchor == 5 and single.cursor == 5 and single.side is Side.NEW
-    assert selection_range(single) == LineRange(side=Side.NEW, start=5, end=5)
-    assert selection_range(back) == LineRange(side=Side.NEW, start=3, end=5)
-    assert selection_range(forward) == LineRange(side=Side.NEW, start=5, end=9)
-    assert (
-        cleared.anchor is None
-        and cleared.cursor is None
-        and selection_range(cleared) is None
+def _basic_render():
+    file = parse_unified_diff(load_fixture("basic.patch")).files[0]
+    return render_view(
+        make_diff_view(
+            file,
+            header="[modified] src/foo.py",
+            content=FileContent(side=Side.NEW, lines=("ctx1", "added", "ctx2")),
+        )
     )
+
+
+def _shifted_render():
+    file = FileDiff(
+        path="src/foo.py",
+        hunks=[
+            Hunk(
+                old_start=1,
+                old_count=3,
+                new_start=1,
+                new_count=4,
+                lines=[
+                    Line(kind="ctx", old_no=1, new_no=1, text="top"),
+                    Line(kind="del", old_no=2, new_no=None, text="gone"),
+                    Line(kind="add", old_no=None, new_no=2, text="inserted"),
+                    Line(kind="add", old_no=None, new_no=3, text="extra"),
+                    Line(kind="ctx", old_no=3, new_no=4, text="bottom"),
+                ],
+            )
+        ],
+    )
+    return render_view(make_diff_view(file, header="[modified] src/foo.py"))
+
+
+def test_select_line_collapses_to_point_and_carries_side() -> None:
+    base = Selection()
+    point = select_line(base, 5)
+    old_point = select_line(base, 4, Side.OLD)
+    cleared = select_line(old_point, None, None)
+
+    assert base.side is None and base.anchor is None and base.cursor is None
+    assert point.anchor == 5 and point.cursor == 5 and point.side is None
+    assert (
+        old_point.anchor == 4 and old_point.cursor == 4 and old_point.side is Side.OLD
+    )
+    assert cleared.anchor is None and cleared.cursor is None and cleared.side is None
+
+
+def test_side_compatible_truth_table() -> None:
+    assert side_compatible(None, None) is True
+    assert side_compatible(None, Side.OLD) is True
+    assert side_compatible(None, Side.NEW) is True
+    assert side_compatible(Side.OLD, None) is True
+    assert side_compatible(Side.OLD, Side.OLD) is True
+    assert side_compatible(Side.OLD, Side.NEW) is False
+    assert side_compatible(Side.NEW, None) is True
+    assert side_compatible(Side.NEW, Side.OLD) is False
+    assert side_compatible(Side.NEW, Side.NEW) is True
+
+
+def test_resolve_side_defaults_neutral_to_new() -> None:
+    assert resolve_side(None) is Side.NEW
+    assert resolve_side(Side.OLD) is Side.OLD
+    assert resolve_side(Side.NEW) is Side.NEW
+
+
+def test_extend_to_locks_first_color_and_refuses_cross_color() -> None:
+    grey = select_line(Selection(), 2, None)
+    grey_extends = extend_to(grey, 5, None)
+    locks_old = extend_to(grey, 5, Side.OLD)
+    refused = extend_to(locks_old, 8, Side.NEW)
+    locks_new = extend_to(select_line(Selection(), 9, None), 12, Side.NEW)
+
+    assert grey_extends.side is None
+    assert grey_extends.anchor == 2 and grey_extends.cursor == 5
+    assert locks_old.side is Side.OLD
+    assert locks_old.anchor == 2 and locks_old.cursor == 5
+    assert refused == locks_old
+    assert locks_new.side is Side.NEW
+    assert locks_new.anchor == 9 and locks_new.cursor == 12
+
+
+def test_step_to_compatible_skips_opposite_color() -> None:
+    shifted = _shifted_render()
+
+    assert step_to_compatible(shifted, 3, +1, Side.OLD) == 6
+    assert step_to_compatible(shifted, 5, +1, Side.OLD) == 6
+    assert step_to_compatible(shifted, 3, +1, Side.NEW) == 4
+    assert step_to_compatible(shifted, 6, -1, Side.NEW) == 5
+    assert step_to_compatible(shifted, 6, -1, Side.OLD) == 3
+    assert step_to_compatible(shifted, 6, +1, Side.OLD) is None
+
+
+def test_selection_range_resolves_neutral_and_locks_old() -> None:
+    shifted = _shifted_render()
+    red_point = selection_range(shifted, select_line(Selection(), 3, Side.OLD))
+    neutral = selection_range(shifted, select_line(Selection(), 6, None))
+    grey_then_red = selection_range(
+        shifted, extend_to(select_line(Selection(), 6, None), 3, Side.OLD)
+    )
+    red_then_grey = selection_range(
+        shifted, extend_to(select_line(Selection(), 3, Side.OLD), 6, None)
+    )
+    skipped = selection_range(
+        shifted,
+        extend_to(
+            select_line(Selection(), 3, Side.OLD),
+            step_to_compatible(shifted, 3, +1, Side.OLD),
+            None,
+        ),
+    )
+    empty = selection_range(shifted, Selection())
+
+    assert red_point == LineRange(side=Side.OLD, start=2, end=2)
+    assert neutral == LineRange(side=Side.NEW, start=4, end=4)
+    assert grey_then_red == LineRange(side=Side.OLD, start=2, end=3)
+    assert red_then_grey == LineRange(side=Side.OLD, start=2, end=3)
+    assert skipped == LineRange(side=Side.OLD, start=2, end=3)
+    assert empty is None
+
+
+def test_draft_to_comment_persists_old_side_snapshot() -> None:
+    change = Change(id="chg-s", versions=[make_version("rev-1", "basic.patch")])
+    draft = new_draft("src/foo.py", LineRange(side=Side.OLD, start=2, end=2))
+    draft = set_draft_text(draft, "this line was removed")
+    comment = draft_to_comment(draft, change, author="bob", now=NOW)
+
+    assert comment.range == LineRange(side=Side.OLD, start=2, end=2)
+    assert comment.range.side is Side.OLD
+    assert comment.anchor_snapshot == ["removed"]
+    assert comment.revision == "rev-1"
+
+
+def test_old_side_comment_renders_at_removed_line() -> None:
+    rendered = _basic_render()
+    comment = comment_factory(
+        "c-old", revision="rev-1", range=LineRange(side=Side.OLD, start=2, end=2)
+    )
+    annotation = CommentAnnotation(comment=comment, depth=0)
+
+    result = annotate(rendered, (annotation,))
+    boxes = anchor_boxes(rendered, (annotation,))
+
+    assert result.comment_rows == {4: comment}
+    assert result.rendered.lines[3].kind is RowKind.CHANGE
+    assert result.rendered.lines[3].columns[0].kind is CellKind.DEL
+    assert boxes == (AnchorBox(start=3, end=3, kind=CommentKind.ACTIVE),)
 
 
 def test_editor_draft_confirms_and_moves_anchor() -> None:

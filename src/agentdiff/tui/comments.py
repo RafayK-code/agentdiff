@@ -28,7 +28,14 @@ from agentdiff.model.types import (
     new_comment_id,
 )
 from agentdiff.store.base import Store, StoreError
-from agentdiff.tui.render import DisplayLine, RenderedDiff, RowKind, line_index
+from agentdiff.tui.render import (
+    DisplayLine,
+    RenderedDiff,
+    RowKind,
+    line_index,
+    line_number,
+    line_side,
+)
 
 DEFAULT_AUTHOR = "reviewer"
 DRIFTED_NOTE = "location not found in patch"
@@ -42,29 +49,88 @@ class DraftKind(str, Enum):
 
 @dataclass(frozen=True)
 class Selection:
-    side: Side = Side.NEW
+    """A display-line selection. ``anchor``/``cursor`` are display-line indices
+    into ``RenderedDiff.lines``; ``side`` is the range's locked side or None
+    while still neutral (grey context only). Neutral is transient and never
+    persisted — it resolves to ``NEW`` when a comment is built. (R1/R2)
+    """
+
+    side: Side | None = None
     anchor: int | None = None
     cursor: int | None = None
 
 
-def select_line(selection: Selection, line: int | None) -> Selection:
-    return replace(selection, anchor=line, cursor=line)
+def select_line(
+    selection: Selection, index: int | None, side: Side | None = None
+) -> Selection:
+    """Collapse to a point at display-line ``index``; ``side`` is the line's
+    own side (None = neutral). (R1)"""
+    return replace(selection, side=side, anchor=index, cursor=index)
 
 
-def extend_to(selection: Selection, line: int | None) -> Selection:
+def side_compatible(locked: Side | None, incoming: Side | None) -> bool:
+    """Grey (None) is compatible with anything; a locked side accepts only
+    itself. (R2)"""
+    return locked is None or incoming is None or locked is incoming
+
+
+def step_to_compatible(
+    rendered: RenderedDiff, start: int, direction: int, side: Side | None
+) -> int | None:
+    """The next display index strictly beyond ``start`` in ``direction``
+    (``+1``/``-1``) whose line is compatible with the locked ``side`` (neutral
+    or the same color). Opposite-color lines are skipped; ``None`` when there
+    is none, so the cursor holds. (R2, revised by feedback)
+    """
+    index = start + direction
+    while 0 <= index < len(rendered.lines):
+        if side_compatible(side, line_side(rendered.lines[index])):
+            return index
+        index += direction
+    return None
+
+
+def extend_to(
+    selection: Selection, index: int | None, side: Side | None = None
+) -> Selection:
+    """Extend the range to display-line ``index``. Refused (unchanged) when
+    ``side`` is the opposite color; otherwise the first colored line locks the
+    side. (R2)"""
     if selection.anchor is None:
-        return replace(selection, anchor=line, cursor=line)
-    return replace(selection, cursor=line)
+        return select_line(selection, index, side)
+    if not side_compatible(selection.side, side):
+        return selection
+    locked = selection.side if selection.side is not None else side
+    return replace(selection, side=locked, cursor=index)
 
 
-def selection_range(selection: Selection) -> LineRange | None:
+def resolve_side(side: Side | None) -> Side:
+    """Neutral resolves to NEW when the comment is built. (R1/R2)"""
+    return Side.NEW if side is None else side
+
+
+def selection_range(rendered: RenderedDiff, selection: Selection) -> LineRange | None:
+    """The concrete ``LineRange`` for the current selection, or None when empty.
+
+    ``side`` is ``resolve_side(selection.side)``; start/end are the min/max model
+    line numbers of the display lines in ``[anchor, cursor]`` on that side. Grey
+    context lines carry both numbers, so a grey-then-red range yields OLD
+    numbers. (R1/R2)
+    """
     if selection.anchor is None or selection.cursor is None:
         return None
-    return LineRange(
-        side=selection.side,
-        start=min(selection.anchor, selection.cursor),
-        end=max(selection.anchor, selection.cursor),
-    )
+    side = resolve_side(selection.side)
+    low, high = sorted((selection.anchor, selection.cursor))
+    numbers = [
+        number
+        for index in range(low, high + 1)
+        if 0 <= index < len(rendered.lines)
+        for number in [line_number(rendered.lines[index], side)]
+        if number is not None
+    ]
+    if not numbers:
+        return None
+    return LineRange(side=side, start=min(numbers), end=max(numbers))
 
 
 @dataclass(frozen=True)
@@ -601,9 +667,12 @@ __all__ = [
     "reopen_draft",
     "reply_draft",
     "resolution_reply",
+    "resolve_side",
     "select_line",
     "selection_range",
     "set_draft_text",
+    "side_compatible",
+    "step_to_compatible",
     "thread_members",
     "thread_root",
     "thread_root_id",

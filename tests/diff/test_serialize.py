@@ -5,7 +5,7 @@ from tests.diff.conftest import load_fixture
 from tests.diff.test_parse import _WELL_FORMED_FIXTURE_NAMES
 
 from agentdiff.diff.parse import parse_unified_diff
-from agentdiff.diff.serialize import serialize_unified_diff
+from agentdiff.diff.serialize import serialize_file, serialize_unified_diff
 from agentdiff.model.types import Change, FileDiff, Hunk, Line, Version
 
 
@@ -57,6 +57,20 @@ def test_serialize_emits_modes_and_headers(
     for substring in absent_substrings:
         assert substring not in out
     assert parse_unified_diff(out).files == change.files
+
+
+def test_serialize_file_canonical_and_limited_to_hunks() -> None:
+    file = parse_unified_diff(load_fixture("multiple_hunks.patch")).files[0]
+    full = serialize_file(file)
+    second = serialize_file(file, file.hunks[1:])
+    one = Change(id="chg-s", versions=[Version(revision="rev-1", files=[file])])
+
+    assert full == serialize_unified_diff(one)
+    assert "@@ -1,6 +1,6 @@" in full
+    assert "@@ -19,7 +19,7 @@" in full
+    assert "@@ -19,7 +19,7 @@" in second
+    assert "@@ -1,6 +1,6 @@" not in second
+    assert parse_unified_diff(full).files == [file]
 
 
 def test_serialize_recomputes_hunk_counts() -> None:

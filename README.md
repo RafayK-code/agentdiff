@@ -82,6 +82,12 @@ type → confirm) puts it in a pending buffer; nothing is persisted until you
 press **`C` (Confirm comments)**, which flushes them all at once. An agent sees
 nothing until then.
 
+You can comment on **removed (`-`) lines** as well as added/context lines: the
+comment anchors to the old side, so an agent knows it refers to the code *before*
+the change. A `v` visual range stays on one side — grey context lines never lock
+it, the first colored line fixes the side, and extending onto the other color is
+refused.
+
 ## CLI
 
 The CLI is read-only for discovery/export and also provides comment actions, so
@@ -94,6 +100,7 @@ agentdiff list --change ID        # list a change's comments
 agentdiff list --change ID --threads                    # group into reply threads
 agentdiff list --change ID --thread-state resolved      # only resolved threads
 agentdiff export --change ID      # export comments (markdown default, or --format json)
+agentdiff show <comment-id>       # show one comment with the diff hunks it anchors to
 agentdiff add ...                 # author a comment or reply
 agentdiff resolve <thread-id>     # resolve a thread (thread-id = threads[].root)
 agentdiff reopen <thread-id>      # reopen a thread as a reply on the current version
@@ -108,6 +115,10 @@ cwd). `list`, `export`, and `changes` hide `CLOSED` comments unless you pass
 **root comment id** — the `root` field in the export's `threads` array. Passing
 a non-root id is an error. (`add` authors individual comments/replies; it is the
 only command that creates new comments, and only on the current version.)
+
+`show <comment-id>` prints one comment (naming its `side` and lines) followed by
+the canonical diff hunks it anchors to — on-demand surrounding context without
+bloating the JSON export. An unknown id exits 1.
 
 `list --threads` prints each reply thread with a derived status marker
 (`[open]` / `[resolved]` / `[closed]`) and its replies indented. `--thread-state`
@@ -170,6 +181,7 @@ agentdiff close c-root123
       "file": "src/foo.py",
       "side": "NEW",
       "lines": [300, 364],
+      "context": ["def process(items):", "    return items.sort()"],
       "text": "Extract this into a helper",
       "author": "reviewer",
       "in_reply_to": null,
@@ -185,6 +197,13 @@ agentdiff close c-root123
 ```
 
 - `lines` is `[start, end]`, 1-based inclusive (`null` = file-level comment).
+- `side` is `OLD` or `NEW` (`null` = file-level): it tells a consumer whether
+  the anchor is on the **removed** (old) or **added/current** (new) code.
+- `context` is the comment's stored `anchor_snapshot` — the exact lines it was
+  written against (`[]` = file-level). For `side: OLD` these are the **removed**
+  lines (the "before"); for `side: NEW` the added/current lines. It is projected
+  verbatim from the store, never recomputed. Together `side` + `lines` + `context`
+  tell an agent which side, which line numbers, and which exact lines to look at.
 - `state` is `ACTIVE`, `RESOLVED`, or `CLOSED`; `CLOSED` is omitted by default.
 - `drifted: true` means the comment's anchor could not be found in the current
   version (it renders as a file-level note).

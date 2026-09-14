@@ -1,5 +1,5 @@
 from agentdiff.diff.parse import DiffParseError, parse_unified_diff
-from agentdiff.diff.serialize import serialize_unified_diff
+from agentdiff.diff.serialize import serialize_file, serialize_unified_diff
 from agentdiff.diff.sources import (
     CommandRunner,
     GitDiffError,
@@ -22,5 +22,6 @@ __all__ = [
     "head_commit_title",
     "parse_unified_diff",
     "read_file_at_revision",
+    "serialize_file",
     "serialize_unified_diff",
 ]

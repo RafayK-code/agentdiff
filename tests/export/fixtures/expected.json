@@ -34,6 +34,7 @@
         2,
         2
       ],
+      "context": [],
       "text": "Fix this",
       "author": "alice",
       "in_reply_to": null,
@@ -50,6 +51,7 @@
         1,
         1
       ],
+      "context": [],
       "text": "Old-side note",
       "author": "bob",
       "in_reply_to": null,
@@ -63,6 +65,7 @@
       "file": "src/foo.py",
       "side": null,
       "lines": null,
+      "context": [],
       "text": "File-level note",
       "author": "carol",
       "in_reply_to": null,
@@ -76,6 +79,7 @@
       "file": "src/foo.py",
       "side": null,
       "lines": null,
+      "context": [],
       "text": "This anchor drifted",
       "author": "dave",
       "in_reply_to": null,
@@ -89,6 +93,7 @@
       "file": "src/foo.py",
       "side": null,
       "lines": null,
+      "context": [],
       "text": "Closed note",
       "author": "grace",
       "in_reply_to": null,
@@ -105,6 +110,7 @@
         1,
         1
       ],
+      "context": [],
       "text": "Threaded reply one",
       "author": "eve",
       "in_reply_to": null,
@@ -121,6 +127,7 @@
         3,
         3
       ],
+      "context": [],
       "text": "Threaded reply two",
       "author": "frank",
       "in_reply_to": "c-thread-1",

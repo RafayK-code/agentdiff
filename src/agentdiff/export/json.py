@@ -70,8 +70,13 @@ def _change_block(change: Change) -> dict[str, object]:
 
 
 def _comment_block(comment: Comment) -> dict[str, object]:
-    """{id, revision, file, side, lines, text, author, in_reply_to, state,
-    drifted, created_at} — order pinned. (R12)"""
+    """{id, revision, file, side, lines, context, text, author, in_reply_to,
+    state, drifted, created_at} — order pinned per §7. (R5/R12)
+
+    ``side`` is the explicit OLD/NEW marker (``null`` for file-level) and
+    ``context`` is the stored ``anchor_snapshot`` projected verbatim — the
+    removed lines for ``OLD``, the added/current lines for ``NEW``.
+    """
     if comment.range is None:
         side: str | None = None
         lines: list[int] | None = None
@@ -84,6 +89,7 @@ def _comment_block(comment: Comment) -> dict[str, object]:
         "file": comment.file,
         "side": side,
         "lines": lines,
+        "context": list(comment.anchor_snapshot),
         "text": comment.text,
         "author": comment.author,
         "in_reply_to": comment.in_reply_to,

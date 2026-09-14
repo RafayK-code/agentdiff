@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Protocol, TextIO
 
 from agentdiff import __version__
-from agentdiff.cli import add, changes, close, export, reopen, resolve
+from agentdiff.cli import add, changes, close, export, reopen, resolve, show
 from agentdiff.cli import list as list_command
 from agentdiff.cli.common import store_for
 from agentdiff.cli.errors import CliError
@@ -54,6 +54,7 @@ _COMMANDS: dict[str, _Command] = {
     "resolve": resolve,
     "reopen": reopen,
     "close": close,
+    "show": show,
 }
 
 
@@ -103,6 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
     resolve.add_parser(subparsers)
     reopen.add_parser(subparsers)
     close.add_parser(subparsers)
+    show.add_parser(subparsers)
     return parser
 
 

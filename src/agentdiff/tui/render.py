@@ -480,6 +480,20 @@ def expand_all_view(view: DiffView) -> DiffView:
     return view if expansion == view.expansion else replace(view, expansion=expansion)
 
 
+def line_side(line: DisplayLine) -> Side | None:
+    """Side a unified display line anchors to. (R1/R2)
+
+    A unified ``-`` (DEL) line is the ``OLD`` side, a ``+`` (ADD) line is the
+    ``NEW`` side, and a context/header/skip/note/comment row is neutral (None).
+    """
+    for column in line.columns:
+        if column.kind is CellKind.DEL:
+            return Side.OLD
+        if column.kind is CellKind.ADD:
+            return Side.NEW
+    return None
+
+
 def line_number(line: DisplayLine, side: Side) -> int | None:
     """The model line number a unified display line carries on `side`. (R4)"""
     index = 0 if side is Side.OLD else 1
