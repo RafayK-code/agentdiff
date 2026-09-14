@@ -140,7 +140,7 @@ class AgentdiffApp(App[None]):
         height: 1fr;
     }
     #files {
-        width: 34%;
+        width: 30%;
         border: round #303030;
     }
     #files:focus {
@@ -339,9 +339,13 @@ class AgentdiffApp(App[None]):
             )
             files.append(ListItem(row))
 
-    def _refresh_diff(self, *, focus_hunk: bool = False) -> None:
+    def _refresh_diff(
+        self, *, focus_hunk: bool = False, preserve_scroll: bool = False
+    ) -> None:
         diff = self.query_one("#diff", Static)
         indicator = self.query_one("#change-indicator", Static)
+        pane = self.query_one("#diff-pane", ScrollableContainer)
+        scroll_offset = pane.scroll_offset
         if self._view is None:
             self._rendered = None
             self._base_text = None
@@ -391,7 +395,10 @@ class AgentdiffApp(App[None]):
             f"change {self._view.hunk_index + 1} of {count}" if count else ""
         )
         self._refresh_status()
-        self._scroll_to_hunk(rendered)
+        if preserve_scroll:
+            pane.scroll_to(x=scroll_offset.x, y=scroll_offset.y, animate=False)
+        else:
+            self._scroll_to_hunk(rendered)
 
     def _refresh_status(self) -> None:
         parts: list[str] = []
@@ -844,7 +851,7 @@ class AgentdiffApp(App[None]):
         self._pending = remove_pending(self._pending, comment.id)
         self._status = "pending removed"
         self._refresh_files()
-        self._refresh_diff()
+        self._refresh_diff(preserve_scroll=True)
 
     def _edit_pending(self, comment: Comment) -> None:
         kind = DraftKind.REPLY if comment.in_reply_to else DraftKind.NEW
@@ -919,7 +926,7 @@ class AgentdiffApp(App[None]):
         self._close_editor()
         self._status = "staged (not saved)"
         self._refresh_files()
-        self._refresh_diff()
+        self._refresh_diff(preserve_scroll=True)
 
     def _reload_comments(self) -> None:
         change = self._state.change
@@ -931,7 +938,7 @@ class AgentdiffApp(App[None]):
             self._status = f"store error: {exc}"
         self._view_state = self._build_comment_view()
         self._refresh_files()
-        self._refresh_diff()
+        self._refresh_diff(preserve_scroll=True)
 
     def action_cancel(self) -> None:
         if self._draft is not None:
