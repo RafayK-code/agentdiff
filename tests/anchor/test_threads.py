@@ -2,16 +2,19 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from tests.tui.conftest import comment_factory
+from tests.tui.conftest import comment_factory, make_version
 
 from agentdiff.anchor import (
     ThreadState,
     group_threads,
     is_resolved_thread,
+    reopen_reply,
+    resolution_reply,
+    thread_last_author,
     thread_state,
     thread_state_of,
 )
-from agentdiff.model import CommentState
+from agentdiff.model import Change, CommentState, Role
 
 NOW = datetime(2020, 1, 1, tzinfo=timezone.utc)
 
@@ -114,3 +117,80 @@ def test_thread_state_derived_from_latest_member() -> None:
     assert is_resolved_thread(r_root, [r_root, r_reply]) is True
     assert is_resolved_thread(o_reopen, [o_root, o_res, o_reopen]) is False
     assert is_resolved_thread(c_root, [c_root, c_close]) is False
+
+
+def test_thread_last_author_is_latest_member() -> None:
+    root = comment_factory("c-root", revision="rev-1", role=Role.HUMAN, created_at=NOW)
+    agent_reply = comment_factory(
+        "c-a",
+        revision="rev-1",
+        in_reply_to="c-root",
+        role=Role.AGENT,
+        created_at=later(1),
+    )
+    human_reply = comment_factory(
+        "c-h",
+        revision="rev-1",
+        in_reply_to="c-a",
+        role=Role.HUMAN,
+        created_at=later(2),
+    )
+    solo = comment_factory("c-solo", revision="rev-1", role=Role.AGENT, created_at=NOW)
+    tie_x = comment_factory(
+        "c-x", revision="rev-1", role=Role.HUMAN, created_at=later(3)
+    )
+    tie_y = comment_factory(
+        "c-y",
+        revision="rev-1",
+        in_reply_to="c-x",
+        role=Role.AGENT,
+        created_at=later(3),
+    )
+
+    assert group_threads([root, agent_reply])[0].last_author is Role.AGENT
+    assert group_threads([root, agent_reply, human_reply])[0].last_author is Role.HUMAN
+    assert (
+        thread_last_author(agent_reply, [root, agent_reply, human_reply]) is Role.HUMAN
+    )
+    assert group_threads([solo])[0].last_author is Role.AGENT
+    assert group_threads([tie_x, tie_y])[0].last_author is Role.AGENT
+
+
+def test_thread_last_author_follows_visible_tip() -> None:
+    root = comment_factory("c-root", revision="rev-1", role=Role.HUMAN, created_at=NOW)
+    closed_tip = comment_factory(
+        "c-closed",
+        revision="rev-1",
+        in_reply_to="c-root",
+        role=Role.AGENT,
+        state=CommentState.CLOSED,
+        created_at=later(1),
+    )
+
+    assert group_threads([root])[0].last_author is Role.HUMAN
+    assert thread_last_author(root, [root]) is Role.HUMAN
+    assert thread_last_author(root, [root, closed_tip]) is Role.AGENT
+
+
+def test_reply_builders_stamp_role() -> None:
+    change = Change(id="chg-s", versions=[make_version("rev-1", "basic.patch")])
+    root = comment_factory("c-root", revision="rev-1")
+    reopen_default = reopen_reply(
+        root, change, text="why this way?", author="agentdiff"
+    )
+    reopen_agent = reopen_reply(
+        root, change, text="note", author="reviewer", role=Role.AGENT
+    )
+    resolve_default = resolution_reply(root, change)
+    resolve_human = resolution_reply(root, change, role=Role.HUMAN)
+
+    assert reopen_default.role is Role.HUMAN
+    assert reopen_default.state is CommentState.ACTIVE
+    assert reopen_default.in_reply_to == "c-root"
+    assert reopen_agent.role is Role.AGENT
+    assert reopen_agent.author == "reviewer"
+    assert resolve_default.role is Role.AGENT
+    assert resolve_default.state is CommentState.RESOLVED
+    assert resolve_default.author == "agent"
+    assert resolve_human.role is Role.HUMAN
+    assert resolve_human.state is CommentState.RESOLVED

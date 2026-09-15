@@ -10,6 +10,7 @@ from agentdiff.model import (
     Comment,
     CommentState,
     LineRange,
+    Role,
     Side,
     Version,
 )
@@ -39,6 +40,7 @@ def comment_factory(
     state: CommentState = CommentState.ACTIVE,
     text: str = "t",
     author: str = "alice",
+    role: Role = Role.HUMAN,
     in_reply_to: str | None = None,
     anchor_snapshot: list[str] | None = None,
     change_id: str = "chg-s",
@@ -56,6 +58,7 @@ def comment_factory(
         range=range,
         text=text,
         author=author,
+        role=role,
         state=state,
         drifted=drifted,
         in_reply_to=in_reply_to,

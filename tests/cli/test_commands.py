@@ -283,3 +283,62 @@ def test_thread_commands_reject_non_root(
         captured = capsys.readouterr()
         assert rc == 1
         assert "not a thread root" in captured.err
+
+
+def test_add_reply_inherits_parent_anchor(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    root = tmp_path / "store"
+    store = create_store(root)
+    store.save_change(
+        Change(id="chg-s", versions=[make_version("rev-1", "basic.patch")])
+    )
+    parent = comment_factory(
+        "c-parent",
+        change_id="chg-s",
+        revision="rev-1",
+        range=LineRange(side=Side.NEW, start=2, end=2),
+    )
+    store.add_comment(parent)
+
+    rc = main(
+        [
+            "add",
+            "src/foo.py",
+            "--in-reply-to",
+            "c-parent",
+            "--message",
+            "why?",
+            "--role",
+            "agent",
+            "--root",
+            str(root),
+        ]
+    )
+    reply_id = capsys.readouterr().out.strip()
+    reply = store.get_comment(reply_id)
+
+    assert rc == 0
+    assert reply.in_reply_to == "c-parent"
+    assert reply.range == parent.range
+    assert reply.file == parent.file
+    assert reply.anchor_snapshot == ["added"]
+
+    rc_lines = main(
+        [
+            "add",
+            "src/foo.py",
+            "--in-reply-to",
+            "c-parent",
+            "--lines",
+            "3-3",
+            "--message",
+            "moved",
+            "--root",
+            str(root),
+        ]
+    )
+    moved = store.get_comment(capsys.readouterr().out.strip())
+
+    assert rc_lines == 0
+    assert moved.range == LineRange(side=Side.NEW, start=3, end=3)

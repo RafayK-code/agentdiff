@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from agentdiff.cli.errors import CliError
+from agentdiff.model import Role
 from agentdiff.store import Store, create_store
 
 
@@ -14,6 +15,19 @@ def add_root_option(parser: argparse.ArgumentParser) -> None:
         default=Path("."),
         metavar="PATH",
         help="repo root containing .agentdiff/ (default: current directory)",
+    )
+
+
+def parse_role(value: str) -> Role:
+    return Role.HUMAN if value == "human" else Role.AGENT
+
+
+def add_role_option(parser: argparse.ArgumentParser, *, default: str = "agent") -> None:
+    parser.add_argument(
+        "--role",
+        choices=["human", "agent"],
+        default=default,
+        help="authoring role (default: agent)",
     )
 
 

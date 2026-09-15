@@ -24,6 +24,7 @@ from agentdiff.model import (
     Hunk,
     Line,
     LineRange,
+    Role,
     Side,
     Version,
 )
@@ -40,6 +41,7 @@ from agentdiff.tui.comments import (
     Selection,
     anchor_boxes,
     annotate,
+    annotation_kind,
     build_comment_view,
     comment_counts,
     draft_to_comment,
@@ -755,7 +757,7 @@ def test_anchor_boxes_merge_precedence_and_gaps() -> None:
     )
 
     assert anchor_boxes(rendered, (active, pending, resolved, drifted)) == (
-        AnchorBox(start=2, end=5, kind=CommentKind.RESOLVED),
+        AnchorBox(start=2, end=5, kind=CommentKind.PENDING),
     )
     assert anchor_boxes(rendered, (active,)) == (
         AnchorBox(start=2, end=4, kind=CommentKind.ACTIVE),
@@ -851,6 +853,125 @@ def test_comment_counts_are_conversation_level() -> None:
 
     counts = comment_counts(view, pending)
 
-    assert counts["src/foo.py"] == FileCommentCounts(draft=2, resolved=1, unresolved=1)
+    assert counts["src/foo.py"] == FileCommentCounts(
+        draft=2, resolved=1, human_last=1, agent_last=0
+    )
     # rev-1 comments are scoped out of the rev-2 view, so new.txt has no counts
     assert counts.get("new.txt", FileCommentCounts()) == FileCommentCounts()
+
+
+def test_draft_authors_human() -> None:
+    change = Change(id="chg-s", versions=[make_version("rev-1", "basic.patch")])
+    root = comment_factory("c-root", revision="rev-1")
+    draft = set_draft_text(
+        new_draft("src/foo.py", LineRange(side=Side.NEW, start=1, end=1)), "hi"
+    )
+
+    default = draft_to_comment(draft, change, now=NOW)
+    reply = draft_to_comment(reply_draft(root), change, now=NOW)
+    explicit = draft_to_comment(
+        draft, change, author="agentdiff", role=Role.AGENT, now=NOW
+    )
+
+    assert default.role is Role.HUMAN
+    assert default.author == "reviewer"
+    assert reply.role is Role.HUMAN
+    assert explicit.role is Role.AGENT
+    assert explicit.author == "agentdiff"
+
+
+def test_annotation_kind_precedence() -> None:
+    c = comment_factory("c-1", revision="rev-1")
+    pending = CommentAnnotation(comment=c, pending=True, last_author=Role.AGENT)
+    resolved = CommentAnnotation(comment=c, resolved=True, last_author=Role.HUMAN)
+    both = CommentAnnotation(
+        comment=c, pending=True, resolved=True, last_author=Role.HUMAN
+    )
+    human_last = CommentAnnotation(comment=c, last_author=Role.HUMAN)
+    agent_last = CommentAnnotation(comment=c, last_author=Role.AGENT)
+    bare = CommentAnnotation(comment=c)
+
+    assert annotation_kind(pending) is CommentKind.PENDING
+    assert annotation_kind(resolved) is CommentKind.RESOLVED
+    assert annotation_kind(both) is CommentKind.PENDING
+    assert annotation_kind(human_last) is CommentKind.HUMAN_LAST
+    assert annotation_kind(agent_last) is CommentKind.AGENT_LAST
+    assert annotation_kind(bare) is CommentKind.ACTIVE
+    assert CommentKind.HUMAN_LAST.value == "human_last"
+    assert CommentKind.AGENT_LAST.value == "agent_last"
+
+
+def test_inline_annotations_carry_thread_last_author() -> None:
+    change = Change(id="chg-s", versions=[make_version("rev-1", "basic.patch")])
+    root = comment_factory("c-root", revision="rev-1", role=Role.HUMAN, created_at=NOW)
+    agent_reply = comment_factory(
+        "c-reply",
+        revision="rev-1",
+        in_reply_to="c-root",
+        role=Role.AGENT,
+        created_at=later(1),
+    )
+    view = build_comment_view([root, agent_reply], change)
+
+    anns = inline_annotations(view, PendingBuffer(), "src/foo.py")
+    pending_human = put_pending(
+        PendingBuffer(),
+        comment_factory(
+            "p-1",
+            revision="rev-1",
+            in_reply_to="c-root",
+            role=Role.HUMAN,
+            created_at=later(2),
+        ),
+    )
+    anns_pending = inline_annotations(view, pending_human, "src/foo.py")
+
+    assert {a.comment.id: a.last_author for a in anns} == {
+        "c-root": Role.AGENT,
+        "c-reply": Role.AGENT,
+    }
+    assert {a.comment.id: (a.last_author, a.pending) for a in anns_pending} == {
+        "c-root": (Role.HUMAN, False),
+        "c-reply": (Role.HUMAN, False),
+        "p-1": (Role.HUMAN, True),
+    }
+
+
+def test_comment_counts_split_by_last_responder() -> None:
+    change = Change(id="chg-s", versions=[make_version("rev-1", "basic.patch")])
+    p_root = comment_factory("c-p", revision="rev-1", role=Role.HUMAN, created_at=NOW)
+    p_reply = comment_factory(
+        "c-p2",
+        revision="rev-1",
+        in_reply_to="c-p",
+        role=Role.AGENT,
+        created_at=later(1),
+    )
+    h_root = comment_factory("c-h", revision="rev-1", role=Role.HUMAN, created_at=NOW)
+    r_root = comment_factory("c-r", revision="rev-1", role=Role.HUMAN, created_at=NOW)
+    r_reply = comment_factory(
+        "c-r2",
+        revision="rev-1",
+        in_reply_to="c-r",
+        role=Role.AGENT,
+        state=CommentState.RESOLVED,
+        created_at=later(1),
+    )
+    view = build_comment_view([p_root, p_reply, h_root, r_root, r_reply], change)
+    pending = put_pending(
+        PendingBuffer(),
+        comment_factory(
+            "p-h",
+            revision="rev-1",
+            in_reply_to="c-h",
+            role=Role.HUMAN,
+            created_at=later(2),
+        ),
+    )
+
+    assert comment_counts(view, PendingBuffer())["src/foo.py"] == FileCommentCounts(
+        draft=0, resolved=1, human_last=1, agent_last=1
+    )
+    assert comment_counts(view, pending)["src/foo.py"] == FileCommentCounts(
+        draft=1, resolved=1, human_last=0, agent_last=1
+    )

@@ -250,3 +250,110 @@ def test_list_state_vs_thread_state_compose(
     assert len(thread_out) == 2
     assert "c-root" in thread_out[0]
     assert "c-reply" in thread_out[1]
+
+
+def test_list_last_author_implies_threads_and_marks_responder(
+    capsys: pytest.CaptureFixture[str],
+    convo_store: object,
+    convo_store_root: Path,
+) -> None:
+    rc_h = main(
+        [
+            "list",
+            "--change",
+            "chg-s",
+            "--last-author",
+            "human",
+            "--root",
+            str(convo_store_root),
+        ]
+    )
+    out_h = capsys.readouterr().out.splitlines()
+    rc_a = main(
+        [
+            "list",
+            "--change",
+            "chg-s",
+            "--last-author",
+            "agent",
+            "--root",
+            str(convo_store_root),
+        ]
+    )
+    out_a = capsys.readouterr().out.splitlines()
+
+    assert rc_h == 0
+    assert len(out_h) == 2
+    assert out_h[0].startswith("[open] last=human ")
+    assert "c-b" in out_h[0]
+    assert "c-a" not in "\n".join(out_h)
+    assert "c-c" not in "\n".join(out_h)
+
+    assert rc_a == 0
+    assert len(out_a) == 4
+    assert out_a[0].startswith("[open] last=agent ")
+    assert "c-a" in out_a[0]
+    assert out_a[2].startswith("[resolved] last=agent ")
+    assert "c-c" in out_a[2]
+
+
+def test_list_last_author_composes_with_thread_state(
+    capsys: pytest.CaptureFixture[str],
+    convo_store: object,
+    convo_store_root: Path,
+) -> None:
+    rc_oh = main(
+        [
+            "list",
+            "--change",
+            "chg-s",
+            "--thread-state",
+            "open",
+            "--last-author",
+            "human",
+            "--root",
+            str(convo_store_root),
+        ]
+    )
+    out_oh = capsys.readouterr().out.splitlines()
+    rc_oa = main(
+        [
+            "list",
+            "--change",
+            "chg-s",
+            "--thread-state",
+            "open",
+            "--last-author",
+            "agent",
+            "--root",
+            str(convo_store_root),
+        ]
+    )
+    out_oa = capsys.readouterr().out.splitlines()
+    rc_state = main(
+        [
+            "list",
+            "--change",
+            "chg-s",
+            "--state",
+            "active",
+            "--root",
+            str(convo_store_root),
+        ]
+    )
+    out_state = capsys.readouterr().out.splitlines()
+
+    assert rc_oh == 0
+    assert len(out_oh) == 2
+    assert out_oh[0].startswith("[open] last=human ")
+    assert "c-b" in out_oh[0]
+
+    assert rc_oa == 0
+    assert len(out_oa) == 2
+    assert out_oa[0].startswith("[open] last=agent ")
+    assert "c-a" in out_oa[0]
+
+    assert rc_state == 0
+    assert len(out_state) == 5
+    assert all(not line.startswith("[") and "last=" not in line for line in out_state)
+    assert "c-c2" not in "\n".join(out_state)

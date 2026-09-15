@@ -99,6 +99,7 @@ agentdiff changes --revision SHA  # find the change whose versions include this 
 agentdiff list --change ID        # list a change's comments
 agentdiff list --change ID --threads                    # group into reply threads
 agentdiff list --change ID --thread-state resolved      # only resolved threads
+agentdiff list --change ID --last-author human          # only human-last threads
 agentdiff export --change ID      # export comments (markdown default, or --format json)
 agentdiff show <comment-id>       # show one comment with the diff hunks it anchors to
 agentdiff add ...                 # author a comment or reply
@@ -121,12 +122,19 @@ the canonical diff hunks it anchors to — on-demand surrounding context without
 bloating the JSON export. An unknown id exits 1.
 
 `list --threads` prints each reply thread with a derived status marker
-(`[open]` / `[resolved]` / `[closed]`) and its replies indented. `--thread-state`
-shows only threads whose derived status matches (the whole thread) and implies
-`--threads`. Note the difference: `--state` filters an individual comment's
+(`[open]` / `[resolved]` / `[closed]`), the last responder (`last=human` /
+`last=agent`), and its replies indented. `--thread-state` shows only threads
+whose derived status matches (the whole thread) and implies `--threads`.
+`--last-author human|agent` filters threads by the role of the last reply (it
+also implies `--threads` and is orthogonal to `--thread-state`, so the two
+combine). Note the difference: `--state` filters an individual comment's
 **own** state, while `--thread-state` filters by the **thread's derived** status.
 Resolving appends a `RESOLVED` reply and leaves the root `ACTIVE`, so a resolved
 thread's root is not itself `RESOLVED` — use `--thread-state resolved`.
+
+The CLI authors as `AGENT` by default (it is the harness surface): `add`,
+`resolve`, and `reopen` all take `--role human|agent` to override. `role` is
+independent of `--author` (the free-form name).
 
 ### Finding a change from a commit
 
@@ -184,6 +192,7 @@ agentdiff close c-root123
       "context": ["def process(items):", "    return items.sort()"],
       "text": "Extract this into a helper",
       "author": "reviewer",
+      "role": "HUMAN",
       "in_reply_to": null,
       "state": "ACTIVE",
       "drifted": false,
@@ -191,7 +200,12 @@ agentdiff close c-root123
     }
   ],
   "threads": [
-    { "root": "c-1f5caf5f...", "state": "open", "comments": ["c-1f5caf5f..."] }
+    {
+      "root": "c-1f5caf5f...",
+      "state": "open",
+      "last_author": "HUMAN",
+      "comments": ["c-1f5caf5f..."]
+    }
   ]
 }
 ```
@@ -204,13 +218,19 @@ agentdiff close c-root123
   lines (the "before"); for `side: NEW` the added/current lines. It is projected
   verbatim from the store, never recomputed. Together `side` + `lines` + `context`
   tell an agent which side, which line numbers, and which exact lines to look at.
+- `role` is `HUMAN` or `AGENT`: which side authored the comment. It is set at
+  authorship (the TUI is the human surface, the CLI is the harness surface) and
+  is independent of the free-form `author` name.
 - `state` is `ACTIVE`, `RESOLVED`, or `CLOSED`; `CLOSED` is omitted by default.
 - `drifted: true` means the comment's anchor could not be found in the current
   version (it renders as a file-level note).
 - `threads` gives each reply chain's derived status explicitly — `state` is
-  `open`/`resolved`/`closed` (the latest member's state), so consumers don't have
-  to reconstruct it from `in_reply_to` ordering. Resolving appends a `RESOLVED`
-  reply, so a resolved thread's root stays `ACTIVE`; read the thread `state`.
+  `open`/`resolved`/`closed` (the latest member's state) and `last_author` is
+  the role of the latest member — so consumers don't have to reconstruct either
+  from `in_reply_to` ordering. An `open` thread whose `last_author` is `HUMAN`
+  is awaiting the agent; `AGENT` is awaiting the human. Resolving appends a
+  `RESOLVED` reply, so a resolved thread's root stays `ACTIVE`; read the thread
+  `state`.
 - The schema is versioned; see `ARCHITECTURE.md §7` for the change policy.
 
 ## For agent harnesses
@@ -222,13 +242,23 @@ agentdiff export --format json
 ```
 
 That returns the line-anchored comments for the current change. Work from the
-top-level **`threads`** array: address the comments in each thread whose
-`state` is `open` (`file` + `lines` + `side`), then resolve the thread by its
-`root` id (`agentdiff resolve <root>`). Don't rely on a comment's own `state` —
-resolving appends a `RESOLVED` reply and leaves the root `ACTIVE`, so a thread's
-`state` is what tells you whether it's done. From the shell,
-`agentdiff list --thread-state open` gives the same view. The human reviews and
-`close`s. A live MCP server (`agentdiff serve-mcp`) is on the roadmap.
+top-level **`threads`** array: address the comments in each thread whose `state`
+is `open` and whose `last_author` is `HUMAN` — those are **awaiting the agent**.
+An `open` thread with `last_author: AGENT` is awaiting the human. For each
+awaiting thread, use `file` + `lines` + `side`; if you can address the comment,
+**resolve** the thread by its `root` id (`agentdiff resolve <root>`); if you
+cannot, **reply** with an explanation or a question instead of resolving
+(`agentdiff add src/foo.py --in-reply-to <id> --role agent --message "..."`).
+Don't rely on a comment's own `state` — resolving appends a `RESOLVED` reply and
+leaves the root `ACTIVE`, so a thread's `state` is what tells you whether it's
+done. From the shell, the actionable set is the two filters combined:
+
+```sh
+agentdiff list --thread-state open --last-author human   # open threads awaiting the agent
+```
+
+The human reviews and `close`s. A live MCP server (`agentdiff serve-mcp`) is on
+the roadmap.
 
 ## Development
 

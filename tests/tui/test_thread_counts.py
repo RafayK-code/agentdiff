@@ -61,7 +61,9 @@ def test_comment_counts_use_derived_thread_state() -> None:
     counts = comment_counts(view, PendingBuffer())
     with_pending = comment_counts(view, pending)
 
-    assert counts["src/foo.py"] == FileCommentCounts(draft=0, resolved=1, unresolved=1)
+    assert counts["src/foo.py"] == FileCommentCounts(
+        draft=0, resolved=1, human_last=1, agent_last=0
+    )
     assert with_pending["src/foo.py"] == FileCommentCounts(
-        draft=1, resolved=0, unresolved=1
+        draft=1, resolved=0, human_last=1, agent_last=0
     )

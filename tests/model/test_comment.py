@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 from pydantic import ValidationError
@@ -14,6 +14,7 @@ from agentdiff.model import (
     CommentState,
     CommentValidationError,
     LineRange,
+    Role,
     Side,
     Version,
     new_comment_id,
@@ -87,6 +88,33 @@ def test_change_and_comment_field_migration() -> None:
     omitted.pop("revision")
     with pytest.raises(ValidationError):
         Comment(**omitted)
+
+
+def test_role_default_and_pre_role_records_load() -> None:
+    now = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    c = Comment(
+        id="c-a",
+        change_id="chg-s",
+        revision="rev-1",
+        file="src/foo.py",
+        text="t",
+        author="alice",
+        state=CommentState.ACTIVE,
+        created_at=now,
+        updated_at=now,
+    )
+    legacy = Comment.model_validate_json(
+        '{"id":"c-b","change_id":"chg-s","revision":"rev-1","file":"src/foo.py",'
+        '"text":"t","author":"bob","state":"ACTIVE",'
+        '"created_at":"2020-01-01T00:00:00Z","updated_at":"2020-01-01T00:00:00Z"}'
+    )
+    explicit = Comment(**{**c.model_dump(), "role": Role.AGENT})
+
+    assert Role.HUMAN.value == "HUMAN"
+    assert Role.AGENT.value == "AGENT"
+    assert c.role is Role.HUMAN
+    assert legacy.role is Role.HUMAN
+    assert explicit.role is Role.AGENT
 
 
 def test_comment_state() -> None:

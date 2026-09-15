@@ -37,6 +37,7 @@
       "context": [],
       "text": "Fix this",
       "author": "alice",
+      "role": "HUMAN",
       "in_reply_to": null,
       "state": "ACTIVE",
       "drifted": false,
@@ -54,6 +55,7 @@
       "context": [],
       "text": "Old-side note",
       "author": "bob",
+      "role": "HUMAN",
       "in_reply_to": null,
       "state": "RESOLVED",
       "drifted": false,
@@ -68,6 +70,7 @@
       "context": [],
       "text": "File-level note",
       "author": "carol",
+      "role": "HUMAN",
       "in_reply_to": null,
       "state": "ACTIVE",
       "drifted": false,
@@ -82,6 +85,7 @@
       "context": [],
       "text": "This anchor drifted",
       "author": "dave",
+      "role": "HUMAN",
       "in_reply_to": null,
       "state": "ACTIVE",
       "drifted": true,
@@ -96,6 +100,7 @@
       "context": [],
       "text": "Closed note",
       "author": "grace",
+      "role": "HUMAN",
       "in_reply_to": null,
       "state": "CLOSED",
       "drifted": false,
@@ -113,6 +118,7 @@
       "context": [],
       "text": "Threaded reply one",
       "author": "eve",
+      "role": "HUMAN",
       "in_reply_to": null,
       "state": "ACTIVE",
       "drifted": false,
@@ -130,6 +136,7 @@
       "context": [],
       "text": "Threaded reply two",
       "author": "frank",
+      "role": "HUMAN",
       "in_reply_to": "c-thread-1",
       "state": "ACTIVE",
       "drifted": false,
@@ -140,6 +147,7 @@
     {
       "root": "c-new",
       "state": "open",
+      "last_author": "HUMAN",
       "comments": [
         "c-new"
       ]
@@ -147,6 +155,7 @@
     {
       "root": "c-old-resolved",
       "state": "resolved",
+      "last_author": "HUMAN",
       "comments": [
         "c-old-resolved"
       ]
@@ -154,6 +163,7 @@
     {
       "root": "c-file-level",
       "state": "open",
+      "last_author": "HUMAN",
       "comments": [
         "c-file-level"
       ]
@@ -161,6 +171,7 @@
     {
       "root": "c-drifted",
       "state": "open",
+      "last_author": "HUMAN",
       "comments": [
         "c-drifted"
       ]
@@ -168,6 +179,7 @@
     {
       "root": "c-closed",
       "state": "closed",
+      "last_author": "HUMAN",
       "comments": [
         "c-closed"
       ]
@@ -175,6 +187,7 @@
     {
       "root": "c-thread-1",
       "state": "open",
+      "last_author": "HUMAN",
       "comments": [
         "c-thread-1",
         "c-thread-2"

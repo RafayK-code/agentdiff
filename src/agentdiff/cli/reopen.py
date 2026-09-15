@@ -4,7 +4,7 @@ import argparse
 from typing import TextIO
 
 from agentdiff.anchor import reanchor_thread, reopen_reply, thread_tip
-from agentdiff.cli.common import add_root_option
+from agentdiff.cli.common import add_role_option, add_root_option, parse_role
 from agentdiff.cli.errors import CliError
 from agentdiff.store import Store
 
@@ -25,6 +25,7 @@ def add_parser(
     )
     p.add_argument("--message", default="Reopened.", help="the reply text")
     p.add_argument("--author", default="agentdiff", help="reply author")
+    add_role_option(p)
     p.set_defaults(func=run)
 
 
@@ -38,7 +39,13 @@ def run(args: argparse.Namespace, store: Store, out: TextIO) -> int:
     if change is None:
         raise CliError(f"unknown change {root.change_id!r}")
     comments = store.list_comments(change.id, include_closed=True)
-    reply = reopen_reply(root, change, text=args.message, author=args.author)
+    reply = reopen_reply(
+        root,
+        change,
+        text=args.message,
+        author=args.author,
+        role=parse_role(args.role),
+    )
     reply = reply.model_copy(update={"in_reply_to": thread_tip(root, comments).id})
     for member in reanchor_thread(root, change, comments, anchor=reply.range):
         store.update_comment(member)

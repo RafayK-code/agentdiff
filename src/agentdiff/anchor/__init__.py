@@ -12,6 +12,7 @@ from agentdiff.model.types import (
     CommentState,
     FileDiff,
     LineRange,
+    Role,
     Side,
     Version,
     new_comment_id,
@@ -93,6 +94,7 @@ def reopen_reply(
     *,
     text: str,
     author: str,
+    role: Role = Role.HUMAN,
     now: datetime | None = None,
 ) -> Comment:
     """Build the ACTIVE reply that reopens ``comment`` on the current version.
@@ -113,6 +115,7 @@ def reopen_reply(
         range=suggested,
         text=text,
         author=author,
+        role=role,
         in_reply_to=comment.id,
         state=CommentState.ACTIVE,
         drifted=drifted,
@@ -234,6 +237,10 @@ class Thread:
         return thread_state_of(self.members[-1].state)
 
     @property
+    def last_author(self) -> Role:
+        return self.members[-1].role
+
+    @property
     def replies(self) -> tuple[Comment, ...]:
         return tuple(member for member in self.members if member.id != self.root.id)
 
@@ -260,6 +267,11 @@ def thread_state(comment: Comment, comments: Sequence[Comment]) -> ThreadState:
     return thread_state_of(thread_tip(comment, comments).state)
 
 
+def thread_last_author(comment: Comment, comments: Sequence[Comment]) -> Role:
+    """The role of the latest member of ``comment``'s thread. (R2)"""
+    return thread_tip(comment, comments).role
+
+
 def is_resolved_thread(comment: Comment, comments: Sequence[Comment]) -> bool:
     """True when the thread tip is RESOLVED (not CLOSED). (R8, R1, R2)"""
     return thread_state(comment, comments) is ThreadState.RESOLVED
@@ -270,6 +282,7 @@ def resolution_reply(
     change: Change,
     *,
     author: str = RESOLVE_AUTHOR,
+    role: Role = Role.AGENT,
     now: datetime | None = None,
 ) -> Comment:
     """The RESOLVED reply that resolves ``comment``'s thread. (R7, Feedback 1)
@@ -290,6 +303,7 @@ def resolution_reply(
         range=comment.range,
         text="resolved",
         author=author,
+        role=role,
         in_reply_to=comment.id,
         state=CommentState.RESOLVED,
         drifted=False,
@@ -318,6 +332,7 @@ __all__ = [
     "thread_members",
     "thread_root",
     "thread_root_id",
+    "thread_last_author",
     "thread_state",
     "thread_state_of",
     "thread_tip",

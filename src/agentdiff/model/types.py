@@ -20,6 +20,11 @@ class CommentState(str, Enum):
     CLOSED = "CLOSED"
 
 
+class Role(str, Enum):
+    HUMAN = "HUMAN"
+    AGENT = "AGENT"
+
+
 class LineRange(BaseModel):
     side: Side = Field(strict=True)
     start: int
@@ -42,6 +47,7 @@ class Comment(BaseModel):
     range: LineRange | None = None
     text: str
     author: str
+    role: Role = Role.HUMAN
     in_reply_to: str | None = None
     state: CommentState = Field(strict=True)
     drifted: bool = False

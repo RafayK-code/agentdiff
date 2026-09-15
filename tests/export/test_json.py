@@ -225,6 +225,7 @@ def test_export_context_projects_stored_snapshot() -> None:
         "context",
         "text",
         "author",
+        "role",
         "in_reply_to",
         "state",
         "drifted",

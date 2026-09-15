@@ -35,6 +35,12 @@ def add_parser(
         help="only threads with this derived status; implies --threads",
     )
     p.add_argument(
+        "--last-author",
+        dest="last_author",
+        choices=["human", "agent"],
+        help="only threads whose last reply is from this role; implies --threads",
+    )
+    p.add_argument(
         "--include-closed",
         action="store_true",
         help="include CLOSED comments (hidden by default)",
@@ -79,19 +85,28 @@ def run(args: argparse.Namespace, store: Store, out: TextIO) -> int:
     if not comments:
         out.write("No comments.\n")
         return 0
-    if not (args.threads or args.thread_state is not None):
+    if not (
+        args.threads or args.thread_state is not None or args.last_author is not None
+    ):
         for comment in comments:
             out.write(_format_comment(comment) + "\n")
         return 0
     threads = group_threads(comments)
     if args.thread_state is not None:
         threads = tuple(t for t in threads if t.state.value == args.thread_state)
+    if args.last_author is not None:
+        threads = tuple(
+            t for t in threads if t.last_author.value.lower() == args.last_author
+        )
     if not threads:
         out.write("No threads.\n")
         return 0
     for thread in threads:
         root_line = _format_comment(thread.root, show_reply=False)
-        out.write(f"[{thread.state.value}] {root_line}\n")
+        out.write(
+            f"[{thread.state.value}] last={thread.last_author.value.lower()} "
+            f"{root_line}\n"
+        )
         for reply in thread.replies:
             out.write(f"  {_format_comment(reply)}\n")
     return 0

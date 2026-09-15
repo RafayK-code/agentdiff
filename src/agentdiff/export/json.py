@@ -70,7 +70,7 @@ def _change_block(change: Change) -> dict[str, object]:
 
 
 def _comment_block(comment: Comment) -> dict[str, object]:
-    """{id, revision, file, side, lines, context, text, author, in_reply_to,
+    """{id, revision, file, side, lines, context, text, author, role, in_reply_to,
     state, drifted, created_at} — order pinned per §7. (R5/R12)
 
     ``side`` is the explicit OLD/NEW marker (``null`` for file-level) and
@@ -92,6 +92,7 @@ def _comment_block(comment: Comment) -> dict[str, object]:
         "context": list(comment.anchor_snapshot),
         "text": comment.text,
         "author": comment.author,
+        "role": comment.role.value,
         "in_reply_to": comment.in_reply_to,
         "state": comment.state.value,
         "drifted": comment.drifted,
@@ -100,10 +101,11 @@ def _comment_block(comment: Comment) -> dict[str, object]:
 
 
 def _thread_block(thread: Thread) -> dict[str, object]:
-    """{root, state, comments} — one entry per reply thread. (R6)"""
+    """{root, state, last_author, comments} — one entry per reply thread. (R6)"""
     return {
         "root": thread.root.id,
         "state": thread.state.value,
+        "last_author": thread.last_author.value,
         "comments": [member.id for member in thread.members],
     }
 

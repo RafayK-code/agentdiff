@@ -12,7 +12,7 @@ from textual.events import Click, Key, Resize, TextSelected
 from textual.widgets import Button, Footer, Input, Label, ListItem, ListView, Static
 
 from agentdiff.anchor import reanchor_thread
-from agentdiff.model.types import Comment, Side
+from agentdiff.model.types import Comment, Role, Side
 from agentdiff.store import Store, StoreError, create_store
 from agentdiff.tui.comments import (
     DEFAULT_AUTHOR,
@@ -27,6 +27,7 @@ from agentdiff.tui.comments import (
     Selection,
     anchor_boxes,
     annotate,
+    annotation_kind,
     build_comment_view,
     comment_counts,
     draft_to_comment,
@@ -92,6 +93,8 @@ _NOTE_STYLE = Style(color="#808080", italic=True)
 _COMMENT_STYLE = Style(color="#c586c0")
 _PENDING_COMMENT_STYLE = Style(color="#dcdcaa", italic=True)
 _RESOLVED_COMMENT_STYLE = Style(color="#4ec9b0", italic=True)
+_AWAITING_AGENT_COMMENT_STYLE = Style(color="#e06c75", bold=True)
+_AWAITING_YOU_COMMENT_STYLE = Style(color="#61afef", bold=True)
 _SELECTED_LINE_STYLE = Style(bgcolor="#3a3a3a")
 _SELECTED_ADD_STYLE = Style(bgcolor="#2d6a3f")
 _SELECTED_DEL_STYLE = Style(bgcolor="#6a2d2d")
@@ -114,6 +117,10 @@ def _box_style(kind: CommentKind) -> Style:
         return _RESOLVED_COMMENT_STYLE
     if kind is CommentKind.PENDING:
         return _PENDING_COMMENT_STYLE
+    if kind is CommentKind.HUMAN_LAST:
+        return _AWAITING_AGENT_COMMENT_STYLE
+    if kind is CommentKind.AGENT_LAST:
+        return _AWAITING_YOU_COMMENT_STYLE
     return _COMMENT_STYLE
 
 
@@ -330,8 +337,14 @@ class AgentdiffApp(App[None]):
                 counts_text.append(f"{entry_counts.draft}", _PENDING_COMMENT_STYLE)
             if entry_counts.resolved:
                 counts_text.append(f" {entry_counts.resolved}", _RESOLVED_COMMENT_STYLE)
-            if entry_counts.unresolved:
-                counts_text.append(f" {entry_counts.unresolved}", _COMMENT_STYLE)
+            if entry_counts.human_last:
+                counts_text.append(
+                    f" {entry_counts.human_last}", _AWAITING_AGENT_COMMENT_STYLE
+                )
+            if entry_counts.agent_last:
+                counts_text.append(
+                    f" {entry_counts.agent_last}", _AWAITING_YOU_COMMENT_STYLE
+                )
             row = Horizontal(
                 Label(Text(format_file(entry)), classes="file-name"),
                 Label(counts_text, classes="file-counts"),
@@ -600,12 +613,11 @@ class AgentdiffApp(App[None]):
             text.append(line.text, _NOTE_STYLE)
         elif line.kind is RowKind.COMMENT:
             annotation = self._annotations_by_line.get(index)
-            if annotation is not None and annotation.resolved:
-                style = _RESOLVED_COMMENT_STYLE
-            elif annotation is not None and annotation.pending:
-                style = _PENDING_COMMENT_STYLE
-            else:
-                style = _COMMENT_STYLE
+            style = (
+                _box_style(annotation_kind(annotation))
+                if annotation is not None
+                else _COMMENT_STYLE
+            )
             text.append(line.text, style)
         else:
             for column in line.columns:
@@ -799,7 +811,9 @@ class AgentdiffApp(App[None]):
             self._refresh_status()
             return
         try:
-            self._store.add_comment(resolution_reply(thread_tip(comment, pool), change))
+            self._store.add_comment(
+                resolution_reply(thread_tip(comment, pool), change, role=Role.HUMAN)
+            )
         except StoreError as exc:
             self._status = f"store error: {exc}"
             self._refresh_status()

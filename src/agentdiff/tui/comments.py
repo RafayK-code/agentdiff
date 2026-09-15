@@ -14,6 +14,7 @@ from agentdiff.anchor import (
     reopen_reply,
     resolution_reply,
     snapshot_lines,
+    thread_last_author,
     thread_members,
     thread_root,
     thread_root_id,
@@ -24,6 +25,7 @@ from agentdiff.model.types import (
     Comment,
     CommentState,
     LineRange,
+    Role,
     Side,
     new_comment_id,
 )
@@ -214,6 +216,7 @@ def draft_to_comment(
     change: Change,
     *,
     author: str = DEFAULT_AUTHOR,
+    role: Role = Role.HUMAN,
     now: datetime | None = None,
 ) -> Comment:
     current = change.current
@@ -233,6 +236,7 @@ def draft_to_comment(
         range=draft.anchor,
         text=draft.text,
         author=author,
+        role=role,
         in_reply_to=draft.in_reply_to,
         state=CommentState.ACTIVE,
         drifted=draft.drifted,
@@ -369,6 +373,7 @@ class CommentAnnotation:
     note: str | None = None
     resolved: bool = False
     reply: bool = False
+    last_author: Role | None = None
 
 
 @dataclass(frozen=True)
@@ -449,6 +454,7 @@ def inline_annotations(
                 resolved=resolved,
                 reply=comment.in_reply_to is not None,
                 note=_note_for(comment),
+                last_author=thread_last_author(comment, pool),
             )
         )
     return tuple(annotations)
@@ -510,6 +516,8 @@ class CommentKind(str, Enum):
     ACTIVE = "active"
     PENDING = "pending"
     RESOLVED = "resolved"
+    HUMAN_LAST = "human_last"
+    AGENT_LAST = "agent_last"
 
 
 @dataclass(frozen=True)
@@ -521,16 +529,22 @@ class AnchorBox:
 
 _KIND_PRECEDENCE = {
     CommentKind.ACTIVE: 0,
-    CommentKind.PENDING: 1,
+    CommentKind.HUMAN_LAST: 1,
+    CommentKind.AGENT_LAST: 1,
     CommentKind.RESOLVED: 2,
+    CommentKind.PENDING: 3,
 }
 
 
-def _annotation_kind(annotation: CommentAnnotation) -> CommentKind:
-    if annotation.resolved:
-        return CommentKind.RESOLVED
+def annotation_kind(annotation: CommentAnnotation) -> CommentKind:
     if annotation.pending:
         return CommentKind.PENDING
+    if annotation.resolved:
+        return CommentKind.RESOLVED
+    if annotation.last_author is Role.HUMAN:
+        return CommentKind.HUMAN_LAST
+    if annotation.last_author is Role.AGENT:
+        return CommentKind.AGENT_LAST
     return CommentKind.ACTIVE
 
 
@@ -553,7 +567,7 @@ def anchor_boxes(
         if not positions:
             continue
         spans.append([min(positions), max(positions)])
-        kinds.append(_annotation_kind(annotation))
+        kinds.append(annotation_kind(annotation))
     if not spans:
         return ()
     ordered = sorted(
@@ -579,7 +593,8 @@ def anchor_boxes(
 class FileCommentCounts:
     draft: int = 0
     resolved: int = 0
-    unresolved: int = 0
+    human_last: int = 0
+    agent_last: int = 0
 
 
 def comment_counts(
@@ -588,12 +603,13 @@ def comment_counts(
     *,
     revision: str | None = None,
 ) -> dict[str, FileCommentCounts]:
-    """Per-file draft / resolved / unresolved counts. Pure. (Feedback 3)
+    """Per-file draft / resolved / human-last / agent-last counts. Pure.
 
-    ``draft`` counts pending comments; ``resolved`` / ``unresolved`` count
-    conversations by their latest member. A conversation with a newer pending
-    reply is a draft, not resolved. Counts are scoped to ``revision`` (the
-    version in view) so they follow version navigation.
+    ``draft`` counts pending comments; ``resolved`` counts conversations whose
+    latest member is RESOLVED, and open conversations are routed to
+    ``human_last``/``agent_last`` by their latest member's role. A conversation
+    with a newer pending reply is a draft, not resolved. Counts are scoped to
+    ``revision`` (the version in view) so they follow version navigation.
     """
     pending_items = [
         comment
@@ -610,7 +626,8 @@ def comment_counts(
 
     draft: dict[str, int] = {}
     resolved: dict[str, int] = {}
-    unresolved: dict[str, int] = {}
+    human_last: dict[str, int] = {}
+    agent_last: dict[str, int] = {}
     for comment in pending_items:
         draft[comment.file] = draft.get(comment.file, 0) + 1
     for thread in group_threads(pool):
@@ -620,14 +637,18 @@ def comment_counts(
         if thread.state is ThreadState.RESOLVED:
             resolved[latest.file] = resolved.get(latest.file, 0) + 1
         elif thread.state is ThreadState.OPEN:
-            unresolved[latest.file] = unresolved.get(latest.file, 0) + 1
+            if thread.last_author is Role.HUMAN:
+                human_last[latest.file] = human_last.get(latest.file, 0) + 1
+            else:
+                agent_last[latest.file] = agent_last.get(latest.file, 0) + 1
 
-    files = set(draft) | set(resolved) | set(unresolved)
+    files = set(draft) | set(resolved) | set(human_last) | set(agent_last)
     return {
         file: FileCommentCounts(
             draft=draft.get(file, 0),
             resolved=resolved.get(file, 0),
-            unresolved=unresolved.get(file, 0),
+            human_last=human_last.get(file, 0),
+            agent_last=agent_last.get(file, 0),
         )
         for file in files
     }
@@ -651,6 +672,7 @@ __all__ = [
     "ThreadedComment",
     "anchor_boxes",
     "annotate",
+    "annotation_kind",
     "build_comment_view",
     "comment_counts",
     "draft_to_comment",
