@@ -104,8 +104,12 @@ def reopen_reply(
     current = change.current
     if current is None:
         raise ValueError(f"change {change.id!r} has no version to reopen onto")
+    # A reply inherits the anchor of the comment it replies to: re-anchoring may
+    # refine where it lands on the current version, but a comment that already
+    # has a range must never be demoted to a file-level reply. (Feedback)
     suggested = reanchor(comment, current)
-    drifted = comment.range is not None and suggested is None
+    if suggested is None:
+        suggested = comment.range
     timestamp = now if now is not None else datetime.now(timezone.utc)
     return Comment(
         id=new_comment_id(),
@@ -118,7 +122,7 @@ def reopen_reply(
         role=role,
         in_reply_to=comment.id,
         state=CommentState.ACTIVE,
-        drifted=drifted,
+        drifted=False,
         created_at=timestamp,
         updated_at=timestamp,
         anchor_snapshot=(
@@ -193,10 +197,13 @@ def reanchor_thread(
     current = change.current
     if current is None:
         return []
+    root = thread_root(comment, comments)
     if anchor is None:
-        anchor = reanchor(thread_root(comment, comments), current)
-    if anchor is None:
-        return []
+        anchor = reanchor(root, current)
+        if anchor is None:
+            # No snapshot to match against: keep the thread's own anchor (which
+            # may be None for a file-level thread) instead of dropping it.
+            anchor = root.range
     return [
         member.model_copy(update={"range": anchor, "revision": current.revision})
         for member in thread_members(comment, comments)

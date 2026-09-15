@@ -66,16 +66,23 @@ Bare `agentdiff` (on a TTY) opens the review UI. Main keys:
 | `j` / `k` | move the line cursor |
 | `v` | toggle range selection |
 | `c` | comment on the selected line/range |
+| `F` | comment on the whole file (file-level) |
 | `r` | reply to the selected comment |
 | `s` | resolve the selected comment (appends a `RESOLVED` reply) |
 | `x` | close the selected comment |
 | `C` | **confirm comments** — write all staged comments to the store |
 | `d` | remove a staged comment |
-| `n` / `p` | next / previous change (hunk) |
+| `n` / `p` | next / previous comment **thread** |
 | `[` / `]` / `e` | expand context / expand all |
 | `h` / `l` | previous / next **version** (history; read-only) |
 | `tab` | switch focus (files ↔ diff) |
+| `f` | back to the file list |
 | `q` | quit |
+
+Each comment is colored by its **own author** (human vs agent), with pending and
+resolved overriding — a comment never changes color because someone replied to
+it. The **thread** color (awaiting you / awaiting the agent / resolved / pending)
+lives on the scrollbar marker column and the per-file counts.
 
 **Comments are staged, not written immediately.** Confirming a comment (`c` →
 type → confirm) puts it in a pending buffer; nothing is persisted until you

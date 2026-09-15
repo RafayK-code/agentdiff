@@ -199,10 +199,13 @@ def test_reopen_reply() -> None:
     assert ranged_reply.range == LineRange(side=Side.NEW, start=3, end=3)
     assert ranged_reply.anchor_snapshot == ["added"]
 
+    # A comment that already has a range keeps it: replying never demotes the
+    # thread to a file-level/drifted comment, even when the snapshot no longer
+    # matches (Feedback).
     lost_reply = reopen_reply(lost, change, text="please revisit", author="alice")
-    assert lost_reply.drifted is True
-    assert lost_reply.range is None
-    assert lost_reply.anchor_snapshot == []
+    assert lost_reply.drifted is False
+    assert lost_reply.range == LineRange(side=Side.NEW, start=2, end=2)
+    assert lost_reply.anchor_snapshot == ["inserted"]
 
     file_level_reply = reopen_reply(
         file_level, change, text="please revisit", author="alice"
@@ -214,6 +217,60 @@ def test_reopen_reply() -> None:
     assert ranged.state is CommentState.RESOLVED
     assert lost.state is CommentState.RESOLVED
     assert file_level.state is CommentState.RESOLVED
+
+
+def test_reopen_reply_keeps_anchor_without_snapshot() -> None:
+    # A comment stored without an anchor snapshot (e.g. authored by an external
+    # tool) still has a range; replying to it must stay at that range and never
+    # become a file-level/drifted reply. (Feedback)
+    v1 = _v1()
+    v2 = Version(
+        revision="rev-2",
+        files=parse_unified_diff(load_fixture("basic.patch")).files,
+    )
+    change = Change(id="chg-s", versions=[v1, v2])
+    anchored = _comment(
+        revision="rev-1",
+        line_range=LineRange(side=Side.NEW, start=2, end=2),
+        snapshot=[],
+        state=CommentState.RESOLVED,
+        id="c-anchored",
+    )
+
+    reply = reopen_reply(anchored, change, text="revisit", author="alice")
+
+    assert reply.range == LineRange(side=Side.NEW, start=2, end=2)
+    assert reply.drifted is False
+    assert reply.revision == "rev-2"
+    assert reply.in_reply_to == "c-anchored"
+
+
+def test_reanchor_thread_keeps_a_file_level_thread_on_the_current_version() -> None:
+    v1 = _v1()
+    v2 = Version(
+        revision="rev-2",
+        files=parse_unified_diff(load_fixture("basic.patch")).files,
+    )
+    change = Change(id="chg-s", versions=[v1, v2])
+    root = _comment(
+        revision="rev-1",
+        line_range=None,
+        state=CommentState.RESOLVED,
+        id="c-file-root",
+    )
+    reply = _comment(
+        revision="rev-1",
+        line_range=None,
+        state=CommentState.RESOLVED,
+        id="c-file-reply",
+    ).model_copy(update={"in_reply_to": "c-file-root"})
+
+    updates = reanchor_thread(root, change, [root, reply])
+    updated = {comment.id: comment for comment in updates}
+
+    assert updated["c-file-root"].range is None
+    assert updated["c-file-root"].revision == "rev-2"
+    assert updated["c-file-reply"].revision == "rev-2"
 
 
 def test_reanchor_thread_moves_all_members_to_one_anchor() -> None:

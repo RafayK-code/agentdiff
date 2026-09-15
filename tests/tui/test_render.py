@@ -7,12 +7,14 @@ from agentdiff.model.types import FileDiff, Hunk, Line, Side
 from agentdiff.tui.render import (
     CellKind,
     DisplayLine,
+    RenderedDiff,
     RowKind,
     ViewMode,
     build_rows,
     compute_context_gaps,
     expand_all_view,
     expand_view,
+    hunk_at,
     intra_line_spans,
     line_index,
     line_number,
@@ -210,6 +212,23 @@ def test_hunk_navigation_clamps_without_wrapping() -> None:
     empty = make_diff_view(empty_file, header="x")
     assert prev_hunk(empty).hunk_index == 0
     assert next_hunk(empty).hunk_index == 0
+
+
+def test_hunk_at_selects_the_hunk_at_or_before_a_line() -> None:
+    rendered = RenderedDiff(
+        lines=tuple(DisplayLine(kind=RowKind.CONTEXT, text=str(i)) for i in range(20)),
+        hunk_starts=(1, 7, 15),
+    )
+    bare = RenderedDiff(lines=(), hunk_starts=())
+
+    assert hunk_at(rendered, 0) is None
+    assert hunk_at(rendered, 1) == 0
+    assert hunk_at(rendered, 3) == 0
+    assert hunk_at(rendered, 7) == 1
+    assert hunk_at(rendered, 14) == 1
+    assert hunk_at(rendered, 15) == 2
+    assert hunk_at(rendered, 100) == 2
+    assert hunk_at(bare, 0) is None
 
 
 def test_expand_view_grows_adjacent_gap_and_expand_all_reveals_everything() -> None:

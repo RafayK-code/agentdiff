@@ -246,7 +246,7 @@ def test_thread_helpers_root_tip_members_and_rows() -> None:
     assert thread_rows(comment_rows, unrelated, chain + [unrelated]) == ()
 
 
-def test_reopen_draft_reanchors_or_drifts_and_attaches_to_tip() -> None:
+def test_reopen_draft_reanchors_or_keeps_anchor_and_attaches_to_tip() -> None:
     v1 = make_version("rev-1", "basic.patch")
     shifted = FileDiff(
         path="src/foo.py",
@@ -309,7 +309,8 @@ def test_reopen_draft_reanchors_or_drifts_and_attaches_to_tip() -> None:
     assert d_tip.drifted is False
     assert d_tip.anchor == LineRange(side=Side.NEW, start=3, end=3)
     assert d_tip.file == "src/foo.py"
-    assert d_lost.drifted is True and d_lost.anchor is None
+    assert d_lost.drifted is False
+    assert d_lost.anchor == LineRange(side=Side.NEW, start=2, end=2)
     assert d_lost.file == "src/foo.py"
     assert d_lost.in_reply_to == "c-l"
     assert c_tip.in_reply_to == "c-t"
@@ -463,7 +464,7 @@ def test_old_side_comment_renders_at_removed_line() -> None:
     assert result.comment_rows == {4: comment}
     assert result.rendered.lines[3].kind is RowKind.CHANGE
     assert result.rendered.lines[3].columns[0].kind is CellKind.DEL
-    assert boxes == (AnchorBox(start=3, end=3, kind=CommentKind.ACTIVE),)
+    assert boxes == (AnchorBox(start=3, end=3, kind=CommentKind.HUMAN),)
 
 
 def test_editor_draft_confirms_and_moves_anchor() -> None:
@@ -507,6 +508,25 @@ def test_editor_draft_confirms_and_moves_anchor() -> None:
     assert clamped.anchor == LineRange(side=Side.NEW, start=4, end=4)
     assert fixed.anchor == LineRange(side=Side.NEW, start=2, end=2)
     assert fixed.drifted is False
+
+
+def test_reply_and_reopen_a_file_level_comment_stay_file_level() -> None:
+    change = _basic_change()
+    parent = comment_factory("c-file", revision="rev-2", range=None, text="whole file")
+    reply = draft_to_comment(
+        set_draft_text(reply_draft(parent), "why?"), change, author="alice", now=NOW
+    )
+    resolved = comment_factory(
+        "c-file-r", revision="rev-2", range=None, state=CommentState.RESOLVED
+    )
+    reopened = reopen_draft(resolved, [resolved], change, author="alice")
+
+    assert reply.range is None
+    assert reply.in_reply_to == "c-file"
+    assert reply.state is CommentState.ACTIVE
+    assert reopened.anchor is None
+    assert reopened.drifted is False
+    assert reopened.in_reply_to == "c-file-r"
 
 
 def test_pending_buffer_add_replace_remove() -> None:
@@ -653,6 +673,65 @@ def test_inline_annotations_thread_resolved_reply_and_filter() -> None:
     assert inline_annotations(view, PendingBuffer(), "new.txt") == ()
 
 
+def test_inline_annotations_keeps_replies_nested_below_a_resolved_reply() -> None:
+    # A resolved reply in the middle of a thread must not cut off the replies
+    # that hang off it: every member (including a reply to a reply) stays in the
+    # inline pool so it renders and can be replied to. (Feedback)
+    change = _basic_change()
+    root = comment_factory(
+        "c-root", revision="rev-2", range=LineRange(side=Side.NEW, start=1, end=1)
+    )
+    agent_reply = comment_factory(
+        "c-agent",
+        revision="rev-2",
+        range=LineRange(side=Side.NEW, start=1, end=1),
+        in_reply_to="c-root",
+        created_at=later(1),
+    )
+    resolved_reply = comment_factory(
+        "c-resolved",
+        revision="rev-2",
+        range=LineRange(side=Side.NEW, start=1, end=1),
+        in_reply_to="c-agent",
+        state=CommentState.RESOLVED,
+        created_at=later(2),
+    )
+    human_reply = comment_factory(
+        "c-human",
+        revision="rev-2",
+        range=LineRange(side=Side.NEW, start=1, end=1),
+        in_reply_to="c-resolved",
+        created_at=later(3),
+    )
+    deep_reply = comment_factory(
+        "c-deep",
+        revision="rev-2",
+        range=LineRange(side=Side.NEW, start=1, end=1),
+        in_reply_to="c-human",
+        created_at=later(4),
+    )
+    view = build_comment_view(
+        [root, agent_reply, resolved_reply, human_reply, deep_reply], change
+    )
+
+    anns = inline_annotations(view, PendingBuffer(), "src/foo.py")
+
+    assert [a.comment.id for a in anns] == [
+        "c-root",
+        "c-agent",
+        "c-resolved",
+        "c-human",
+        "c-deep",
+    ]
+    assert {a.comment.id: a.depth for a in anns} == {
+        "c-root": 0,
+        "c-agent": 1,
+        "c-resolved": 2,
+        "c-human": 3,
+        "c-deep": 4,
+    }
+
+
 def test_annotate_splices_rows_and_adjusts_hunk_starts() -> None:
     file = parse_unified_diff(load_fixture("basic.patch")).files[0]
     rendered = render_view(
@@ -760,11 +839,11 @@ def test_anchor_boxes_merge_precedence_and_gaps() -> None:
         AnchorBox(start=2, end=5, kind=CommentKind.PENDING),
     )
     assert anchor_boxes(rendered, (active,)) == (
-        AnchorBox(start=2, end=4, kind=CommentKind.ACTIVE),
+        AnchorBox(start=2, end=4, kind=CommentKind.HUMAN),
     )
     assert anchor_boxes(rendered, separate) == (
-        AnchorBox(start=2, end=2, kind=CommentKind.ACTIVE),
-        AnchorBox(start=5, end=5, kind=CommentKind.ACTIVE),
+        AnchorBox(start=2, end=2, kind=CommentKind.HUMAN),
+        AnchorBox(start=5, end=5, kind=CommentKind.HUMAN),
     )
     assert anchor_boxes(rendered, ()) == ()
 
@@ -880,30 +959,41 @@ def test_draft_authors_human() -> None:
     assert explicit.author == "agentdiff"
 
 
-def test_annotation_kind_precedence() -> None:
-    c = comment_factory("c-1", revision="rev-1")
-    pending = CommentAnnotation(comment=c, pending=True, last_author=Role.AGENT)
-    resolved = CommentAnnotation(comment=c, resolved=True, last_author=Role.HUMAN)
-    both = CommentAnnotation(
-        comment=c, pending=True, resolved=True, last_author=Role.HUMAN
+def test_annotation_kind_uses_own_role_with_pending_resolved_override() -> None:
+    human = CommentAnnotation(
+        comment=comment_factory("c-h", revision="rev-1", role=Role.HUMAN)
     )
-    human_last = CommentAnnotation(comment=c, last_author=Role.HUMAN)
-    agent_last = CommentAnnotation(comment=c, last_author=Role.AGENT)
-    bare = CommentAnnotation(comment=c)
+    agent = CommentAnnotation(
+        comment=comment_factory("c-a", revision="rev-1", role=Role.AGENT)
+    )
+    pending_agent = CommentAnnotation(
+        comment=comment_factory("c-p", revision="rev-1", role=Role.AGENT),
+        pending=True,
+    )
+    resolved_human = CommentAnnotation(
+        comment=comment_factory("c-r", revision="rev-1", role=Role.HUMAN),
+        resolved=True,
+    )
+    both = CommentAnnotation(
+        comment=comment_factory("c-b", revision="rev-1", role=Role.HUMAN),
+        pending=True,
+        resolved=True,
+    )
 
-    assert annotation_kind(pending) is CommentKind.PENDING
-    assert annotation_kind(resolved) is CommentKind.RESOLVED
+    assert annotation_kind(human) is CommentKind.HUMAN
+    assert annotation_kind(agent) is CommentKind.AGENT
+    assert annotation_kind(pending_agent) is CommentKind.PENDING
+    assert annotation_kind(resolved_human) is CommentKind.RESOLVED
     assert annotation_kind(both) is CommentKind.PENDING
-    assert annotation_kind(human_last) is CommentKind.HUMAN_LAST
-    assert annotation_kind(agent_last) is CommentKind.AGENT_LAST
-    assert annotation_kind(bare) is CommentKind.ACTIVE
-    assert CommentKind.HUMAN_LAST.value == "human_last"
-    assert CommentKind.AGENT_LAST.value == "agent_last"
+    assert CommentKind.HUMAN.value == "human"
+    assert CommentKind.AGENT.value == "agent"
 
 
-def test_inline_annotations_carry_thread_last_author() -> None:
+def test_inline_annotations_color_each_comment_by_its_own_author() -> None:
     change = Change(id="chg-s", versions=[make_version("rev-1", "basic.patch")])
     root = comment_factory("c-root", revision="rev-1", role=Role.HUMAN, created_at=NOW)
+    # AGENT reply proves the HUMAN root keeps its own color (R3); under the
+    # slice-13 thread-wide color both would be AGENT.
     agent_reply = comment_factory(
         "c-reply",
         revision="rev-1",
@@ -914,7 +1004,8 @@ def test_inline_annotations_carry_thread_last_author() -> None:
     view = build_comment_view([root, agent_reply], change)
 
     anns = inline_annotations(view, PendingBuffer(), "src/foo.py")
-    pending_human = put_pending(
+    # A staged HUMAN reply is PENDING without recoloring its siblings.
+    pending = put_pending(
         PendingBuffer(),
         comment_factory(
             "p-1",
@@ -924,16 +1015,16 @@ def test_inline_annotations_carry_thread_last_author() -> None:
             created_at=later(2),
         ),
     )
-    anns_pending = inline_annotations(view, pending_human, "src/foo.py")
+    anns_pending = inline_annotations(view, pending, "src/foo.py")
 
-    assert {a.comment.id: a.last_author for a in anns} == {
-        "c-root": Role.AGENT,
-        "c-reply": Role.AGENT,
+    assert {a.comment.id: annotation_kind(a) for a in anns} == {
+        "c-root": CommentKind.HUMAN,
+        "c-reply": CommentKind.AGENT,
     }
-    assert {a.comment.id: (a.last_author, a.pending) for a in anns_pending} == {
-        "c-root": (Role.HUMAN, False),
-        "c-reply": (Role.HUMAN, False),
-        "p-1": (Role.HUMAN, True),
+    assert {a.comment.id: annotation_kind(a) for a in anns_pending} == {
+        "c-root": CommentKind.HUMAN,
+        "c-reply": CommentKind.AGENT,
+        "p-1": CommentKind.PENDING,
     }
 
 

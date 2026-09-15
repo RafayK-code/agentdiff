@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import difflib
 import re
+from bisect import bisect_right
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -443,6 +444,16 @@ def prev_hunk(view: DiffView) -> DiffView:
         return view
     index = max(0, view.hunk_index - 1)
     return view if index == view.hunk_index else replace(view, hunk_index=index)
+
+
+def hunk_at(rendered: RenderedDiff, index: int) -> int | None:
+    """The hunk whose header is at or before display line ``index``; None when
+    there are no hunks or ``index`` precedes the first header. Pure."""
+    starts = rendered.hunk_starts
+    if not starts:
+        return None
+    position = bisect_right(starts, index) - 1
+    return position if position >= 0 else None
 
 
 def expand_view(

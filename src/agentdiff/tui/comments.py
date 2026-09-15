@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, Sequence, Set
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
 
 from agentdiff.anchor import (
     RESOLVE_AUTHOR,
+    Thread,
     ThreadState,
     group_threads,
     is_resolve_comment,
@@ -14,7 +15,6 @@ from agentdiff.anchor import (
     reopen_reply,
     resolution_reply,
     snapshot_lines,
-    thread_last_author,
     thread_members,
     thread_root,
     thread_root_id,
@@ -333,12 +333,20 @@ def build_comment_view(
             replies_by_parent.setdefault(comment.in_reply_to, []).append(comment)
         else:
             roots.append(comment)
+
+    def descendants(root_id: str) -> tuple[Comment, ...]:
+        ordered: list[Comment] = []
+
+        def visit(parent_id: str) -> None:
+            for child in replies_by_parent.get(parent_id, ()):
+                ordered.append(child)
+                visit(child.id)
+
+        visit(root_id)
+        return tuple(ordered)
+
     inline = tuple(
-        ThreadedComment(
-            comment=root,
-            replies=tuple(replies_by_parent.get(root.id, ())),
-        )
-        for root in roots
+        ThreadedComment(comment=root, replies=descendants(root.id)) for root in roots
     )
     resolved = tuple(
         comment
@@ -366,6 +374,85 @@ def thread_rows(
 
 
 @dataclass(frozen=True)
+class ThreadRef:
+    file_index: int
+    file: str
+    thread: Thread
+
+    @property
+    def root(self) -> Comment:
+        return self.thread.root
+
+
+def _thread_sort_key(ref: ThreadRef) -> tuple[int, int, int, datetime, str]:
+    root = ref.root
+    anchor = root.range
+    if anchor is None:
+        return (ref.file_index, 0, 0, root.created_at, root.id)
+    return (ref.file_index, 1, anchor.start, root.created_at, root.id)
+
+
+def thread_order(
+    files: Sequence[str],
+    comments: Sequence[Comment],
+    *,
+    revision: str | None = None,
+) -> tuple[ThreadRef, ...]:
+    """Every navigable thread ordered by (file order, anchor position). Pure. (R1)
+
+    ``comments`` is the stored+pending pool; ``CLOSED`` comments are excluded
+    (they are hidden, so they are not navigable) and, when ``revision`` is set,
+    only members on that revision participate. A thread's anchor is its root's
+    ``range``; a missing anchor (drifted / file-level) sorts first in its file so
+    it matches its rendered row at the top. Threads whose file is not in ``files``
+    are skipped (they never render). Ties break on ``(created_at, id)``.
+    """
+    pool = [
+        comment
+        for comment in comments
+        if comment.state is not CommentState.CLOSED
+        and (revision is None or comment.revision == revision)
+    ]
+    file_index = {path: index for index, path in enumerate(files)}
+    refs: list[ThreadRef] = []
+    for thread in group_threads(pool):
+        index = file_index.get(thread.root.file)
+        if index is None:
+            continue
+        refs.append(ThreadRef(file_index=index, file=thread.root.file, thread=thread))
+    refs.sort(key=_thread_sort_key)
+    return tuple(refs)
+
+
+def thread_index(order: Sequence[ThreadRef], root_id: str | None) -> int | None:
+    """Position of ``root_id`` in ``order``; None when absent/None. Pure. (R1)"""
+    if root_id is None:
+        return None
+    for index, ref in enumerate(order):
+        if ref.root.id == root_id:
+            return index
+    return None
+
+
+def adjacent_thread(
+    order: Sequence[ThreadRef], current_root_id: str | None, delta: int
+) -> ThreadRef | None:
+    """The thread ``delta`` steps (``+1``/``-1``) from ``current_root_id``.
+
+    Clamps at both ends (no wrap). With no current thread, a forward step
+    selects the first thread and a backward step the last. None when ``order``
+    is empty. Pure. (R1)
+    """
+    if not order:
+        return None
+    index = thread_index(order, current_root_id)
+    if index is None:
+        return order[0] if delta > 0 else order[-1]
+    target = max(0, min(len(order) - 1, index + delta))
+    return order[target]
+
+
+@dataclass(frozen=True)
 class CommentAnnotation:
     comment: Comment
     depth: int = 0
@@ -373,7 +460,6 @@ class CommentAnnotation:
     note: str | None = None
     resolved: bool = False
     reply: bool = False
-    last_author: Role | None = None
 
 
 @dataclass(frozen=True)
@@ -454,7 +540,6 @@ def inline_annotations(
                 resolved=resolved,
                 reply=comment.in_reply_to is not None,
                 note=_note_for(comment),
-                last_author=thread_last_author(comment, pool),
             )
         )
     return tuple(annotations)
@@ -513,11 +598,62 @@ def annotate(
 
 
 class CommentKind(str, Enum):
-    ACTIVE = "active"
     PENDING = "pending"
     RESOLVED = "resolved"
-    HUMAN_LAST = "human_last"
-    AGENT_LAST = "agent_last"
+    HUMAN = "human"
+    AGENT = "agent"
+
+
+class ThreadKind(str, Enum):
+    PENDING = "pending"
+    RESOLVED = "resolved"
+    AWAITING_AGENT = "awaiting_agent"
+    AWAITING_YOU = "awaiting_you"
+
+
+def thread_kind(thread: Thread, pending_ids: Set[str] = frozenset()) -> ThreadKind:
+    """A thread's conversation color from its derived state. Pure. (R2, R3)
+
+    A pending tip (staged reply/comment) wins, then RESOLVED, then the last
+    responder: human -> AWAITING_AGENT, agent -> AWAITING_YOU.
+    """
+    if thread.members[-1].id in pending_ids:
+        return ThreadKind.PENDING
+    if thread.state is ThreadState.RESOLVED:
+        return ThreadKind.RESOLVED
+    if thread.last_author is Role.HUMAN:
+        return ThreadKind.AWAITING_AGENT
+    return ThreadKind.AWAITING_YOU
+
+
+@dataclass(frozen=True)
+class ThreadMarker:
+    row: int
+    kind: ThreadKind
+    root: str
+
+
+def marker_row(anchor: int, total_rows: int, height: int) -> int:
+    """Proportional marker row: anchor * (height-1) // (total_rows-1), clamped
+    to [0, height-1]; 0 when the column or content is degenerate. Pure. (R2)"""
+    if height <= 1 or total_rows <= 1:
+        return 0
+    row = anchor * (height - 1) // (total_rows - 1)
+    return max(0, min(height - 1, row))
+
+
+def thread_markers(
+    anchors: Sequence[tuple[int, ThreadKind, str]],
+    *,
+    total_rows: int,
+    height: int,
+) -> tuple[ThreadMarker, ...]:
+    """Map (anchor display row, thread kind, root id) triples to overview
+    markers, preserving order. Pure. (R2)"""
+    return tuple(
+        ThreadMarker(row=marker_row(anchor, total_rows, height), kind=kind, root=root)
+        for anchor, kind, root in anchors
+    )
 
 
 @dataclass(frozen=True)
@@ -528,24 +664,23 @@ class AnchorBox:
 
 
 _KIND_PRECEDENCE = {
-    CommentKind.ACTIVE: 0,
-    CommentKind.HUMAN_LAST: 1,
-    CommentKind.AGENT_LAST: 1,
+    CommentKind.HUMAN: 0,
+    CommentKind.AGENT: 0,
     CommentKind.RESOLVED: 2,
     CommentKind.PENDING: 3,
 }
 
 
 def annotation_kind(annotation: CommentAnnotation) -> CommentKind:
+    """Per-comment color: pending / resolved override, else the comment's own
+    role. Pure. (R3)"""
     if annotation.pending:
         return CommentKind.PENDING
     if annotation.resolved:
         return CommentKind.RESOLVED
-    if annotation.last_author is Role.HUMAN:
-        return CommentKind.HUMAN_LAST
-    if annotation.last_author is Role.AGENT:
-        return CommentKind.AGENT_LAST
-    return CommentKind.ACTIVE
+    if annotation.comment.role is Role.AGENT:
+        return CommentKind.AGENT
+    return CommentKind.HUMAN
 
 
 def anchor_boxes(
@@ -670,6 +805,10 @@ __all__ = [
     "PendingBuffer",
     "Selection",
     "ThreadedComment",
+    "ThreadKind",
+    "ThreadMarker",
+    "ThreadRef",
+    "adjacent_thread",
     "anchor_boxes",
     "annotate",
     "annotation_kind",
@@ -681,6 +820,7 @@ __all__ = [
     "inline_annotations",
     "is_resolve_comment",
     "is_resolved_thread",
+    "marker_row",
     "move_anchor",
     "new_draft",
     "pending_count",
@@ -695,7 +835,11 @@ __all__ = [
     "set_draft_text",
     "side_compatible",
     "step_to_compatible",
+    "thread_index",
+    "thread_kind",
+    "thread_markers",
     "thread_members",
+    "thread_order",
     "thread_root",
     "thread_root_id",
     "thread_rows",
