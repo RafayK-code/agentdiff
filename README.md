@@ -109,7 +109,7 @@ agentdiff list --change ID --thread-state resolved      # only resolved threads
 agentdiff list --change ID --last-author human          # only human-last threads
 agentdiff export --change ID      # export comments (markdown default, or --format json)
 agentdiff show <comment-id>       # show one comment with the diff hunks it anchors to
-agentdiff add ...                 # author a comment or reply
+agentdiff add ...                 # author a comment, or reply (--thread <root> / --in-reply-to <id>)
 agentdiff resolve <thread-id>     # resolve a thread (thread-id = threads[].root)
 agentdiff reopen <thread-id>      # reopen a thread as a reply on the current version
 agentdiff close <thread-id>       # human verdict — close the whole thread (hidden by default)
@@ -121,8 +121,12 @@ cwd). `list`, `export`, and `changes` hide `CLOSED` comments unless you pass
 
 `resolve`, `reopen`, and `close` operate on a **thread**, identified by its
 **root comment id** — the `root` field in the export's `threads` array. Passing
-a non-root id is an error. (`add` authors individual comments/replies; it is the
-only command that creates new comments, and only on the current version.)
+a non-root id is an error. `add` authors individual comments/replies and is the
+only command that creates new comments (only on the current version). For replies,
+`add --thread <root>` is thread-based: it attaches the reply to the thread's
+**tip**, so you never have to name a specific comment. `--in-reply-to <comment-id>`
+replies to one exact comment (rare; prefer `--thread`); the two are mutually
+exclusive.
 
 `show <comment-id>` prints one comment (naming its `side` and lines) followed by
 the canonical diff hunks it anchors to — on-demand surrounding context without
@@ -165,7 +169,10 @@ agentdiff export --change "$(agentdiff changes --revision a0373ca2)" --format js
 # Author a range comment
 agentdiff add src/foo.py --lines 300-364 --message "Extract this into a helper"
 
-# Reply to an existing comment
+# Reply to a thread (attaches to the thread's tip — pass the root id)
+agentdiff add src/foo.py --thread c-root123 --message "Done in the new helper"
+
+# Reply to one specific comment (rare; prefer --thread)
 agentdiff add src/foo.py --in-reply-to c-abc123 --message "Done in the new helper"
 
 # Resolve (agent) and later close (human) — both take the thread's root id
@@ -254,8 +261,9 @@ is `open` and whose `last_author` is `HUMAN` — those are **awaiting the agent*
 An `open` thread with `last_author: AGENT` is awaiting the human. For each
 awaiting thread, use `file` + `lines` + `side`; if you can address the comment,
 **resolve** the thread by its `root` id (`agentdiff resolve <root>`); if you
-cannot, **reply** with an explanation or a question instead of resolving
-(`agentdiff add src/foo.py --in-reply-to <id> --role agent --message "..."`).
+cannot, **reply** with an explanation or a question instead of resolving — reply
+by thread root so it always lands on the tip
+(`agentdiff add src/foo.py --thread <root> --role agent --message "..."`).
 Don't rely on a comment's own `state` — resolving appends a `RESOLVED` reply and
 leaves the root `ACTIVE`, so a thread's `state` is what tells you whether it's
 done. From the shell, the actionable set is the two filters combined:

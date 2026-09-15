@@ -342,3 +342,105 @@ def test_add_reply_inherits_parent_anchor(
 
     assert rc_lines == 0
     assert moved.range == LineRange(side=Side.NEW, start=3, end=3)
+
+
+def test_add_thread_reply_attaches_to_tip(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    root = tmp_path / "store"
+    store = create_store(root)
+    store.save_change(
+        Change(id="chg-s", versions=[make_version("rev-1", "basic.patch")])
+    )
+    store.add_comment(
+        comment_factory(
+            "c-root",
+            change_id="chg-s",
+            revision="rev-1",
+            range=LineRange(side=Side.NEW, start=2, end=2),
+        )
+    )
+    store.add_comment(
+        comment_factory(
+            "c-reply",
+            change_id="chg-s",
+            revision="rev-1",
+            range=LineRange(side=Side.NEW, start=2, end=2),
+            in_reply_to="c-root",
+            created_at=datetime(2024, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=1),
+        )
+    )
+
+    rc = main(
+        [
+            "add",
+            "src/foo.py",
+            "--thread",
+            "c-root",
+            "--message",
+            "addressed",
+            "--role",
+            "agent",
+            "--root",
+            str(root),
+        ]
+    )
+    reply_id = capsys.readouterr().out.strip()
+    reply = store.get_comment(reply_id)
+
+    assert rc == 0
+    # the reply attaches to the thread tip, not the id that was passed
+    assert reply.in_reply_to == "c-reply"
+    assert reply.range == LineRange(side=Side.NEW, start=2, end=2)
+
+
+def test_add_thread_rejects_non_root_and_in_reply_to_combo(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    root = tmp_path / "store"
+    store = create_store(root)
+    store.save_change(
+        Change(id="chg-s", versions=[make_version("rev-1", "basic.patch")])
+    )
+    store.add_comment(comment_factory("c-root", change_id="chg-s", revision="rev-1"))
+    store.add_comment(
+        comment_factory(
+            "c-reply",
+            change_id="chg-s",
+            revision="rev-1",
+            in_reply_to="c-root",
+            created_at=datetime(2024, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=1),
+        )
+    )
+
+    rc = main(
+        [
+            "add",
+            "src/foo.py",
+            "--thread",
+            "c-reply",
+            "--message",
+            "x",
+            "--root",
+            str(root),
+        ]
+    )
+    assert rc == 1
+    assert "not a thread root" in capsys.readouterr().err
+
+    rc = main(
+        [
+            "add",
+            "src/foo.py",
+            "--thread",
+            "c-root",
+            "--in-reply-to",
+            "c-root",
+            "--message",
+            "x",
+            "--root",
+            str(root),
+        ]
+    )
+    assert rc == 1
+    assert "mutually exclusive" in capsys.readouterr().err
