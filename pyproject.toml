@@ -27,7 +27,14 @@ Repository = "https://github.com/RafayK-code/agentdiff"
 Issues = "https://github.com/RafayK-code/agentdiff/issues"
 
 [project.optional-dependencies]
-dev = ["pytest>=7.4", "ruff>=0.4", "build>=1.2", "twine>=5.0"]
+dev = [
+    "pytest>=7.4",
+    "ruff>=0.4",
+    "build>=1.2",
+    "twine>=5.0",
+    "mkdocs>=1.6",
+    "mkdocstrings[python]>=0.25",
+]
 
 [project.scripts]
 agentdiff = "agentdiff.cli:main"
@@ -37,6 +44,9 @@ version = { attr = "agentdiff.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+agentdiff = ["docs/agent-guide.md", "docs/tui-guide.md"]
 
 [tool.ruff]
 line-length = 88

@@ -12,3 +12,6 @@ __pycache__/
 # Packaging
 build/
 dist/
+
+# MkDocs build output
+site/

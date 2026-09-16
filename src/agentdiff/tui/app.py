@@ -62,6 +62,7 @@ from agentdiff.tui.comments import (
     thread_rows,
     thread_tip,
 )
+from agentdiff.tui.help import HelpScreen
 from agentdiff.tui.render import (
     CellKind,
     Column,
@@ -176,6 +177,9 @@ class AgentdiffApp(App[None]):
     #prev-version, #next-version {
         min-width: 5;
     }
+    #help-button {
+        min-width: 3;
+    }
     #body {
         height: 1fr;
     }
@@ -269,6 +273,7 @@ class AgentdiffApp(App[None]):
         Binding("C", "confirm_comments", "Confirm"),
         Binding("v", "toggle_range", "Range"),
         Binding("d", "remove_pending", "Remove"),
+        Binding("?", "show_help", "Help"),
         Binding("escape", "cancel", "Cancel", show=False),
     ]
 
@@ -327,6 +332,7 @@ class AgentdiffApp(App[None]):
             yield Button("\u2039", id="prev-version")
             yield Static(format_header(self._state), id="header-label")
             yield Button("\u203a", id="next-version")
+            yield Button("?", id="help-button")
         with Horizontal(id="body"):
             with ListView(id="files"):
                 for entry in self._state.files:
@@ -718,6 +724,9 @@ class AgentdiffApp(App[None]):
 
     def action_focus_files(self) -> None:
         self.query_one("#files", ListView).focus()
+
+    def action_show_help(self) -> None:
+        self.push_screen(HelpScreen())
 
     def action_next_thread(self) -> None:
         self._goto_thread(+1)
@@ -1173,6 +1182,8 @@ class AgentdiffApp(App[None]):
             self._select_version(-1)
         elif event.button.id == "next-version":
             self._select_version(+1)
+        elif event.button.id == "help-button":
+            self.action_show_help()
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         if (

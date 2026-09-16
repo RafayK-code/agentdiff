@@ -54,6 +54,7 @@ from agentdiff.tui.comments import (
     thread_rows,
     thread_tip,
 )
+from agentdiff.tui.help import HelpScreen
 from agentdiff.tui.render import (
     CONTEXT_STEP,
     Cell,
@@ -130,6 +131,7 @@ __all__ = [
     "FileStatus",
     "FlushResult",
     "GapExpansion",
+    "HelpScreen",
     "PendingBuffer",
     "RenderedDiff",
     "RowKind",

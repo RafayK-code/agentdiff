@@ -1,0 +1,17 @@
+site_name: agentdiff
+site_description: Inline diff comments for any agent harness
+docs_dir: src/agentdiff/docs
+repo_url: https://github.com/RafayK-code/agentdiff
+nav:
+  - Agent guide: agent-guide.md
+  - TUI guide: tui-guide.md
+theme:
+  name: mkdocs
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            show_source: false

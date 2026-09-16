@@ -37,6 +37,10 @@ from agentdiff.cli.common import store_for
 from agentdiff.cli.errors import CliError
 from agentdiff.store import Store, StoreError
 
+REPO_URL = "https://github.com/RafayK-code/agentdiff"
+DOCS_URL = f"{REPO_URL}/tree/main/src/agentdiff/docs"
+EPILOG = f"Docs: {DOCS_URL}\nRepo: {REPO_URL}"
+
 
 class _Command(Protocol):
     def add_parser(
@@ -82,6 +86,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="agentdiff",
         description="Read/consume CLI for agentdiff: discover changes and export "
         "comments for any agent harness.",
+        epilog=EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--version", action="store_true", help="print the version and exit"
