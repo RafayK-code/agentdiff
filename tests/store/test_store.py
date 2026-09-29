@@ -282,14 +282,14 @@ def test_append_and_idempotent_reingest(tmp_path: Path) -> None:
     store.save_change(two)
     assert store.load_change("chg-s").versions == [v1, v2]
     assert store.load_change("chg-s").current.revision == "rev-2"
-    assert store.get_comment("c1").state is CommentState.RESOLVED
+    assert store.get_comment("c1").state is CommentState.ACTIVE
 
     store.save_change(two)
     assert store.load_change("chg-s").versions == [v1, v2]
-    assert store.get_comment("c1").state is CommentState.RESOLVED
+    assert store.get_comment("c1").state is CommentState.ACTIVE
 
 
-def test_auto_resolve_lifecycle(tmp_path: Path) -> None:
+def test_append_version_leaves_comments_untouched(tmp_path: Path) -> None:
     store = create_store(tmp_path)
     v1 = Version(revision="rev-1", files=_basic_files())
     v2 = Version(revision="rev-2", files=_basic_files())
@@ -312,7 +312,7 @@ def test_auto_resolve_lifecycle(tmp_path: Path) -> None:
     store.add_comment(c2)
 
     store.save_change(Change(id="chg-s", versions=[v1, v2]))
-    assert store.get_comment("c1").state is CommentState.RESOLVED
+    assert store.get_comment("c1").state is CommentState.ACTIVE
     assert store.get_comment("c2").state is CommentState.CLOSED
     assert [c.id for c in store.list_comments("chg-s", include_closed=True)] == [
         "c1",
@@ -329,9 +329,9 @@ def test_auto_resolve_lifecycle(tmp_path: Path) -> None:
     assert store.get_comment("c3").state is CommentState.ACTIVE
 
     store.save_change(Change(id="chg-s", versions=[v1, v2, v3]))
-    assert store.get_comment("c3").state is CommentState.RESOLVED
-    assert store.get_comment("c1").state is CommentState.RESOLVED
+    assert store.get_comment("c1").state is CommentState.ACTIVE
     assert store.get_comment("c2").state is CommentState.CLOSED
+    assert store.get_comment("c3").state is CommentState.ACTIVE
 
     before = {c.id: c.state for c in store.list_comments("chg-s", include_closed=True)}
     store.save_change(Change(id="chg-s", versions=[v1, v2, v3]))

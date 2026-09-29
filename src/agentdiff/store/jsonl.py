@@ -167,8 +167,8 @@ class JsonlStore:
         comments: list[Comment],
         incoming: Change,
     ) -> tuple[Change, list[Comment]]:
-        """Append only versions whose revision is new; auto-resolve superseded
-        non-closed comments. Re-ingesting a known revision is a no-op. (R4, R6)"""
+        """Append only versions whose revision is new; comments are untouched.
+        Re-ingesting a known revision is a no-op. (R4, R6)"""
         if old is None:
             return incoming, comments
         known = {version.revision for version in old.versions}
@@ -176,17 +176,7 @@ class JsonlStore:
         if not appended:
             return old, comments
         versions = [*old.versions, *appended]
-        current_revision = versions[-1].revision
-        now = self._now_utc()
-        resolved = [
-            c
-            if c.state is not CommentState.ACTIVE or c.revision == current_revision
-            else c.model_copy(
-                update={"state": CommentState.RESOLVED, "updated_at": now}
-            )
-            for c in comments
-        ]
-        return old.model_copy(update={"versions": versions}), resolved
+        return old.model_copy(update={"versions": versions}), comments
 
     def _add(
         self,

@@ -85,5 +85,9 @@ def load_shell_state(
         _load_content(file, change, runner=runner, cwd=root) for file in change.files
     )
     return build_shell_state(
-        change, contents=contents, comments=comments, commit_title=title
+        change,
+        contents=contents,
+        comments=comments,
+        commit_title=title,
+        repo_name=root.resolve().name,
     )

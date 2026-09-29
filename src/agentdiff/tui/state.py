@@ -41,6 +41,7 @@ class ShellState:
     status: ShellStatus
     change: Change | None = None
     branch: str | None = None
+    repo_name: str | None = None
     commit_title: str | None = None
     change_id: str | None = None
     base_revision: str | None = None
@@ -94,12 +95,14 @@ def build_shell_state(
     contents: Sequence[FileContent | None] = (),
     comments: Sequence[Comment] = (),
     commit_title: str | None = None,
+    repo_name: str | None = None,
 ) -> ShellState:
     version_index = max(0, len(change.versions) - 1)
     return ShellState(
         status=ShellStatus.READY,
         change=change,
         branch=change.branch,
+        repo_name=repo_name,
         commit_title=commit_title,
         change_id=change.id,
         base_revision=change.base_revision,
@@ -164,8 +167,12 @@ def select_file(state: ShellState, delta: int) -> ShellState:
 
 
 def format_header(state: ShellState) -> str:
-    title = state.commit_title or ""
-    header = f"agentdiff  {title}".rstrip()
+    parts = ["agentdiff"]
+    if state.repo_name:
+        parts.append(state.repo_name)
+    if state.commit_title:
+        parts.append(f'"{state.commit_title}"')
+    header = "  ".join(parts)
     change = state.change
     if change is None or not change.versions:
         return header

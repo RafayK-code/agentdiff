@@ -78,6 +78,14 @@ def test_select_version_clamps_rebuilds_and_resets_cursor() -> None:
     assert forward.version_index == 1 and is_current_version(forward) is True
 
 
+def test_header_shows_repo_name_and_quoted_commit_title() -> None:
+    v1 = make_version("rev-1", "basic.patch")
+    change = Change(id="chg-h", branch="feat/x", versions=[v1])
+    state = build_shell_state(change, commit_title="Add foo", repo_name="ringbuffer")
+
+    assert format_header(state) == 'agentdiff  ringbuffer  "Add foo"  v1 of 1'
+
+
 def test_summarize_file_status_and_counts() -> None:
     cases = {
         "basic.patch": ("src/foo.py", FileStatus.MODIFIED, None, 1, 1),
